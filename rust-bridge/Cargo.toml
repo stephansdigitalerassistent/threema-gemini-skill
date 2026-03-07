@@ -1,7 +1,7 @@
 [package]
 name = "threema-gemini-bridge"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 libthreema = { path = "libthreema/lib", features = ["cli"] }
@@ -17,3 +17,6 @@ data-encoding = "2"
 
 [build-dependencies]
 prost-build = "0.14"
+
+[patch.crates-io]
+blake2 = { path = "/home/ubuntu/treema-light/domain/libthreema/patches/blake2" }

@@ -30,7 +30,7 @@ pub(crate) struct MessageCipher(pub(crate) salsa20::XSalsa20Poly1305);
 pub(crate) struct MessageMetadataCipher(pub(crate) salsa20::XSalsa20Poly1305);
 
 /// Shared secret context for usage between two identities (i.e. client to client).
-pub(crate) struct CspE2eKey(x25519::SharedSecretHSalsa20);
+pub struct CspE2eKey(x25519::SharedSecretHSalsa20);
 impl CspE2eKey {
     /// Get the Message Key (MK).
     ///
@@ -153,7 +153,7 @@ impl ClientKey {
 
     /// Derive the shared secret for usage between two identities (i.e. client to client).
     #[must_use]
-    pub(crate) fn derive_csp_e2e_key(&self, client_public_key: &PublicKey) -> CspE2eKey {
+    pub fn derive_csp_e2e_key(&self, client_public_key: &PublicKey) -> CspE2eKey {
         CspE2eKey(x25519::SharedSecretHSalsa20::from(
             self.0.diffie_hellman(&client_public_key.0),
         ))

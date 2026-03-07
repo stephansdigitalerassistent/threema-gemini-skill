@@ -49,7 +49,8 @@ pub(super) fn encrypt_message_container_in_place(
 }
 
 #[expect(unused, reason = "TODO(LIB-51)")]
-pub(super) fn encode_and_encrypt_message(
+#[allow(missing_docs)]
+pub fn encode_and_encrypt_message(
     sender_identity: ThreemaId,
     (legacy_sender_nickname, sender_nickname): (Option<&str>, Delta<&str>),
     receiver_identity: ThreemaId,

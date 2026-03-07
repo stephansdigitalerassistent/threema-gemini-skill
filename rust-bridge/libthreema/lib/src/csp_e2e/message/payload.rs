@@ -50,34 +50,34 @@ pub(crate) struct IncomingMessageWithMetadataBox {
     pub(super) bytes: Vec<u8>,
 
     /// The sender's Threema ID.
-    pub(super) sender_identity: ThreemaId,
+    pub sender_identity: ThreemaId,
 
     /// The receiver's Threema ID.
-    pub(super) receiver_identity: ThreemaId,
+    pub receiver_identity: ThreemaId,
 
     /// The ID of the message
-    pub(super) id: MessageId,
+    pub id: MessageId,
 
     /// (Legacy) UNIX timestamp in seconds for when the message has been created.
     ///
     /// Note: This timestamp is also present in the `metadata` field and should be preferred from
     /// there.
-    pub(super) legacy_created_at: u32,
+    pub legacy_created_at: u32,
 
     /// Message flags.
-    pub(super) flags: MessageFlags,
+    pub flags: MessageFlags,
 
     /// Legacy sender nickname (nickname from metadata should be preferred).
-    pub(super) legacy_sender_nickname: Option<String>,
+    pub legacy_sender_nickname: Option<String>,
 
     /// Encrypted metadata.
-    pub(super) metadata: Option<salsa20::EncryptedDataRange>,
+    pub metadata: Option<salsa20::EncryptedDataRange>,
 
     /// Nonce for both the contained message and the metadata box.
-    pub(super) nonce: Nonce,
+    pub nonce: Nonce,
 
     /// Encrypted contained message.
-    pub(super) message_container: salsa20::EncryptedDataRange,
+    pub message_container: salsa20::EncryptedDataRange,
 }
 impl TryFrom<MessageWithMetadataBox> for IncomingMessageWithMetadataBox {
     type Error = IncomingMessagePayloadError;
@@ -166,7 +166,7 @@ impl TryFrom<MessageWithMetadataBox> for IncomingMessageWithMetadataBox {
 
 /// An error occurred while encoding an outgoing message payload.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum OutgoingMessagePayloadError {
+pub enum OutgoingMessagePayloadError {
     /// Decoding the message failed.
     #[error("Encoding message failed: {0}")]
     EncodingFailed(#[from] ByteWriterError),
@@ -179,24 +179,24 @@ pub(crate) enum OutgoingMessagePayloadError {
 /// An outgoing end-to-end encrypted Threema message with additional end-to-end encrypted metadata.
 #[derive(Educe)]
 #[educe(Debug)]
-pub(crate) struct OutgoingMessageWithMetadataBox {
+pub struct OutgoingMessageWithMetadataBox {
     /// The sender's Threema ID.
-    pub(super) sender_identity: ThreemaId,
+    pub sender_identity: ThreemaId,
 
     /// The receiver's Threema ID.
-    pub(super) receiver_identity: ThreemaId,
+    pub receiver_identity: ThreemaId,
 
     /// The ID of the message.
-    pub(super) id: MessageId,
+    pub id: MessageId,
 
     /// (Legacy) UNIX timestamp in seconds for when the message has been created.
     ///
     /// Note: This timestamp is also present in the `metadata` field and should be preferred from
     /// there.
-    pub(super) legacy_created_at: u32,
+    pub legacy_created_at: u32,
 
     /// Message flags.
-    pub(super) flags: MessageFlags,
+    pub flags: MessageFlags,
 
     /// Legacy sender nickname (nickname from metadata should be preferred).
     ///
@@ -205,18 +205,18 @@ pub(crate) struct OutgoingMessageWithMetadataBox {
     ///
     /// Note 2: Only 32 bytes of the UTF-8 string will be encoded, so prior truncation at UTF-8 codepoints is
     /// advised.
-    pub(super) legacy_sender_nickname: Option<String>,
+    pub legacy_sender_nickname: Option<String>,
 
     /// Encrypted metadata.
     #[educe(Debug(method(debug_slice_length)))]
-    pub(super) metadata: Vec<u8>,
+    pub metadata: Vec<u8>,
 
     /// Nonce for both the contained message and the metadata box.
-    pub(super) nonce: Nonce,
+    pub nonce: Nonce,
 
     /// Encrypted contained message.
     #[educe(Debug(method(debug_slice_length)))]
-    pub(super) message_container: Vec<u8>,
+    pub message_container: Vec<u8>,
 }
 impl OutgoingMessageWithMetadataBox {
     const STATIC_LENGTH: usize = 2 * ThreemaId::LENGTH

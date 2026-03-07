@@ -351,7 +351,7 @@ pub mod in_memory {
     pub struct InMemoryDbContactProvider {
         pub(crate) user_identity: ThreemaId,
         pub(crate) blocked_identities: Rc<RefCell<HashSet<ThreemaId>>>,
-        pub(crate) contacts: Rc<RefCell<InMemoryDbContacts>>,
+        pub contacts: Rc<RefCell<InMemoryDbContacts>>,
         pub(crate) _groups: Rc<RefCell<HashMap<GroupIdentity, bool>>>, // TODO(LIB-16): Implement groups
     }
     impl ContactProvider for InMemoryDbContactProvider {
@@ -521,7 +521,7 @@ pub mod in_memory {
 
     /// In-memory message provider.
     pub struct InMemoryDbMessageProvider {
-        pub(crate) contacts: Rc<RefCell<InMemoryDbContacts>>,
+        pub contacts: Rc<RefCell<InMemoryDbContacts>>,
         pub(crate) conversations: Rc<RefCell<InMemoryDbConversations>>,
     }
     impl ConversationProvider for InMemoryDbMessageProvider {
@@ -610,7 +610,7 @@ pub mod in_memory {
         pub(crate) d2x_nonce_storage: Rc<RefCell<HashSet<Nonce>>>,
         pub(crate) settings: Rc<RefCell<InMemoryDbSettings>>,
         pub(crate) blocked_identities: Rc<RefCell<HashSet<ThreemaId>>>,
-        pub(crate) contacts: Rc<RefCell<InMemoryDbContacts>>,
+        pub contacts: Rc<RefCell<InMemoryDbContacts>>,
         pub(crate) groups: Rc<RefCell<HashMap<GroupIdentity, bool>>>, // TODO(LIB-16): Implement groups
         pub(crate) conversations: Rc<RefCell<InMemoryDbConversations>>,
     }
