@@ -87,6 +87,11 @@ pub mod protobuf {
         include!(concat!(env!("OUT_DIR"), "/csp_e2e.rs"));
     }
 
+    /// Forward Security end-to-end encrypted messages.
+    pub mod csp_e2e_fs {
+        include!(concat!(env!("OUT_DIR"), "/csp_e2e_fs.rs"));
+    }
+
     /// Device to Device Protocol messages.
     pub mod d2d {
         include!(concat!(env!("OUT_DIR"), "/d2d.rs"));

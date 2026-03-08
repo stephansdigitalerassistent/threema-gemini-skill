@@ -29,18 +29,36 @@ const bridge = spawn(BRIDGE_PATH, [
     '--threema-id', THREEMA_ID,
     '--client-key', THREEMA_CLIENT_KEY,
     '--csp-server-group', '16' // Example server group
-]);
+], {
+    env: { ...process.env, RUST_LOG: 'debug' }
+});
 
 bridge.stdout.on('data', (data) => {
     const lines = data.toString().split('\n');
     for (const line of lines) {
         if (!line.trim()) continue;
         try {
-            const output = JSON.parse(line);
-            if (output.type === 'Message') {
-                handleMessage(output);
-            } else if (output.type === 'HandshakeComplete') {
-                log("Handshake complete. Connected to Threema server.");
+            const msg = JSON.parse(line);
+            if (msg.type === 'Message') {
+                handleMessage(msg);
+            } else if (msg.type === 'HandshakeComplete') {
+                log('Handshake complete. Connected to Threema server.');
+                // Send startup message to Stephan
+                const STEPHAN_THREEMA_ID = process.env.STEPHAN_THREEMA_ID;
+                if (STEPHAN_THREEMA_ID) {
+                    log(`Sending startup message to Stephan (${STEPHAN_THREEMA_ID})...`);
+                    const cmd = JSON.stringify({ 
+                        type: 'SendMessage', 
+                        recipient: STEPHAN_THREEMA_ID, 
+                        text: 'Threema-Assistent ist jetzt online und empfangsbereit!' 
+                    }) + '\n';
+                    log(`DEBUG: Writing to bridge stdin: ${cmd.trim()}`);
+                    bridge.stdin.write(cmd);
+                }
+            } else if (msg.type === 'Log') {
+                log(`Bridge ${msg.level.toUpperCase()}: ${msg.message}`);
+            } else {
+                log(`Bridge JSON: ${JSON.stringify(msg)}`);
             }
         } catch (e) {
             log(`Bridge Output: ${line}`);
@@ -99,7 +117,13 @@ async function handleMessage(msg) {
         const fullQuery = instruction + historyContext + "\n\nUser message: " + msg.text;
         
         log(`Asking Gemini for response to ${userName}...`);
-        exec(`/home/ubuntu/gemini-wrapper.js --approval-mode yolo -p "${fullQuery.replace(/"/g, '\\"')}"`, { encoding: 'utf-8' }, (error, stdout, stderr) => {
+        
+        const promptPath = path.join('/tmp', `threema_prompt_${senderId}.txt`);
+        fs.writeFileSync(promptPath, fullQuery);
+
+        exec(`/home/ubuntu/gemini-wrapper.js --approval-mode yolo --prompt-file "${promptPath}"`, { encoding: 'utf-8' }, (error, stdout, stderr) => {
+            if (fs.existsSync(promptPath)) fs.unlinkSync(promptPath);
+            
             if (error) {
                 log(`Gemini Error: ${error.message}`);
                 return;

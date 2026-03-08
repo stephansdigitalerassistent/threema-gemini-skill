@@ -21,6 +21,7 @@ fn main() -> Result<()> {
         &[
             "../threema-protocols/src/common.proto",
             "../threema-protocols/src/csp-e2e.proto",
+            "../threema-protocols/src/csp-e2e-fs.proto",
             "../threema-protocols/src/md-d2d.proto",
             "../threema-protocols/src/md-d2d-sync.proto",
             "../threema-protocols/src/md-d2d-rendezvous.proto",

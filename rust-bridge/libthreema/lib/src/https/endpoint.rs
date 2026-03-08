@@ -11,7 +11,7 @@ use crate::{
 /// specification has no semantic meaning addressed to status code `403` will not map it to
 /// [`HttpsEndpointError::Forbidden`] but instead map it to [`HttpsEndpointError::UnexpectedStatus`].
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum HttpsEndpointError {
+pub enum HttpsEndpointError {
     /// A network error occurred.
     #[error("Network error: {0}")]
     NetworkError(#[from] HttpsError),

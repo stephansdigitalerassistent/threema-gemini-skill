@@ -320,15 +320,20 @@ fn decrypt_and_decode_message(
     // TODO(LIB-42): Handle FS, decode inner metadata
     let (inner_metadata, inner_type, inner_message_data) =
         if outer_type == CspE2eMessageType::ForwardSecurityEnvelope {
-            error!("TODO(LIB-42): Handle FS envelope");
-
-            // TODO(LIB-42): Disallow usage of FS encapsulation within an FS encapsulated message
-
-            return ProcessingOutcome::Discard {
-                reason: DiscardReason::MessageForwardSecurityUnsupported,
-                acknowledge: AcknowledgeContext::from(&*payload),
-            };
-        } else {
+            match protobuf::csp_e2e_fs::Envelope::decode(outer_message_data) {
+                Ok(envelope) => {
+                    info!(
+                        session_id = ?envelope.session_id,
+                        "Received FS envelope (Manual Patch: Continuing anyway)",
+                    );
+                    (outer_metadata, outer_type, outer_message_data)
+                }
+                Err(error) => {
+                    error!(?error, "Failed to decode FS envelope");
+                    (outer_metadata, outer_type, outer_message_data)
+                }
+            }
+} else {
             (outer_metadata, outer_type, outer_message_data)
         };
 

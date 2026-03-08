@@ -53,6 +53,12 @@ use tokio::{
 };
 use tracing::{Level, debug, error, info, trace, warn};
 
+use libthreema::https::directory::{request_identities, handle_identities_result};
+use libthreema::common::config::Flavor;
+
+
+
+
 
 use std::io::BufRead;
 
@@ -101,6 +107,7 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
     }
 
     fn add_or_update_incoming_message(&mut self, message: libthreema::model::message::IncomingMessage) -> Result<(), libthreema::model::provider::ProviderError> {
+        println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "debug".to_string(), message: format!("Provider: received message from {}", message.sender_identity) }).unwrap_or_default());
         use libthreema::model::message::{IncomingMessageBody, ContactMessageBody};
         if let IncomingMessageBody::Contact(contact_body) = &message.body {
             if let ContactMessageBody::Text(text_msg) = contact_body {
@@ -110,11 +117,7 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
                     timestamp: message.created_at,
                 }).unwrap_or_default());
             } else {
-                println!("{}", serde_json::to_string(&BridgeOutput::Message {
-                    sender: message.sender_identity.to_string(),
-                    text: "Received non-text message".to_string(),
-                    timestamp: message.created_at,
-                }).unwrap_or_default());
+                println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "debug".to_string(), message: "Provider: non-text message".to_string() }).unwrap_or_default());
             }
         }
         self.inner.add_or_update_incoming_message(message)
@@ -135,6 +138,7 @@ enum IncomingPayloadForCspE2e {
 }
 
 enum OutgoingPayloadForCspE2e {
+    UnblockIncomingMessages,
     MessageAck(MessageAck),
     MessageWithMetadataBox(MessageWithMetadataBox),
 }
@@ -142,6 +146,7 @@ impl From<OutgoingPayloadForCspE2e> for OutgoingPayload {
     fn from(payload: OutgoingPayloadForCspE2e) -> Self {
         match payload {
             OutgoingPayloadForCspE2e::MessageAck(message_ack) => OutgoingPayload::MessageAck(message_ack),
+            OutgoingPayloadForCspE2e::UnblockIncomingMessages => OutgoingPayload::UnblockIncomingMessages,
             OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg) => OutgoingPayload::MessageWithMetadataBox(msg),
         }
     }
@@ -300,6 +305,7 @@ println!("{}", serde_json::to_string(&BridgeOutput::HandshakeComplete).unwrap())
             // Handle any incoming payload
             if let Some(incoming_payload) = current_instruction.incoming_payload {
                 debug!(?incoming_payload, "Received payload");
+                println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "debug".to_string(), message: format!("RAW PAYLOAD: {:?}", incoming_payload) }).unwrap_or_default());
                 match incoming_payload {
                     IncomingPayload::EchoRequest(echo_payload) => {
                         // Respond to echo request
@@ -402,10 +408,10 @@ println!("{}", serde_json::to_string(&BridgeOutput::HandshakeComplete).unwrap())
     fn try_receive(&mut self, buffer: &mut [u8]) -> anyhow::Result<usize> {
         match self.stream.try_read(buffer) {
             Ok(0) => {
-                // Remote shut down our reading end. But we still need to process the previously
-                // read bytes.
-                warn!("TCP reading end closed");
-                Ok(0)
+                // Remote shut down our reading end.
+                let message = "TCP reading end closed";
+                warn!(message);
+                bail!(message);
             },
             Ok(length) => {
                 debug!(length, "Received bytes");
@@ -540,8 +546,6 @@ impl CspE2eProtocolRunner {
                             .await?;
                     }
                     pending_task = None;
-
-                    // TODO(LIB-16). Enqueue outgoing message task, if any
                 },
             }
         }
@@ -664,8 +668,9 @@ async fn main() -> anyhow::Result<()> {
     // Run the handshake flow
     csp_runner.run_handshake_flow(client_hello).await?;
 
+    
     // Create CSP E2E protocol
-    let mut csp_e2e_protocol = CspE2eProtocolRunner::new(http_client, csp_e2e_context)?;
+    let mut csp_e2e_protocol = CspE2eProtocolRunner::new(http_client.clone(), csp_e2e_context)?;
 
     // Spawn stdin reader
     let stdin_tx = csp_e2e_queues.outgoing.clone();
@@ -677,6 +682,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut stdin_lines = tokio::io::BufReader::new(tokio::io::stdin());
     let mut current_line = String::new();
+    println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "info".to_string(), message: "Stdin reader ready".to_string() }).unwrap_or_default());
     
     // Run the protocols
     tokio::select! {
@@ -685,41 +691,88 @@ async fn main() -> anyhow::Result<()> {
         _ = signal::ctrl_c() => {},
         _ = async {
             use tokio::io::AsyncBufReadExt;
+            let _ = stdin_tx.send(OutgoingPayloadForCspE2e::UnblockIncomingMessages).await;
             while let Ok(len) = stdin_lines.read_line(&mut current_line).await {
                 if len == 0 { break; }
-                if let Ok(BridgeInput::SendMessage { recipient, text }) = serde_json::from_str(&current_line) {
-                    if let Ok(receiver_identity) = libthreema::common::ThreemaId::try_from(recipient.as_str()) {
-                        let contacts = database_contacts.borrow();
-                        if let Some((contact, _)) = contacts.get(&receiver_identity) {
-                            let shared_secret = client_key.derive_csp_e2e_key(&contact.public_key);
-                            
-                            let message = libthreema::model::message::OutgoingMessage {
-                                id: libthreema::common::MessageId::random(),
-                                overrides: libthreema::model::message::MessageOverrides::default(),
-                                created_at: (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64),
-                                body: libthreema::model::message::OutgoingMessageBody::Contact(
-                                    libthreema::model::message::OutgoingContactMessageBody {
-                                        receiver_identity,
-                                        body: libthreema::model::message::ContactMessageBody::Text(
-                                            libthreema::model::message::TextMessage { text }
-                                        )
-                                    }
-                                )
+                let trimmed = current_line.trim();
+                if trimmed.is_empty() { continue; }
+                
+                println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "debug".to_string(), message: format!("STDIN RECEIVE: {}", trimmed) }).unwrap_or_default());
+                
+                match serde_json::from_str::<BridgeInput>(&current_line) {
+                    Ok(BridgeInput::SendMessage { recipient, text }) => {
+                        if let Ok(receiver_identity) = libthreema::common::ThreemaId::try_from(recipient.as_str()) {
+                            // Check if contact exists
+                            let contact_opt = {
+                                let contacts = database_contacts.borrow();
+                                contacts.get(&receiver_identity).map(|(c, _)| c.clone())
                             };
                             
-                            let outgoing_box = libthreema::csp_e2e::message::task::outgoing::encode_and_encrypt_message(
-                                user_identity,
-                                (None, libthreema::common::Delta::Update("Stephans digitaler Assistent")),
-                                receiver_identity,
-                                shared_secret,
-                                &message,
-                                libthreema::common::Nonce::random(),
-                            );
-                            
-                            if let Ok(msg_box) = libthreema::csp::payload::MessageWithMetadataBox::try_from(outgoing_box) {
-                                let _ = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box)).await;
+                            let contact = if let Some(c) = contact_opt {
+                                Some(c)
+                            } else {
+                                // Perform Directory Lookup
+                                println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "info".to_string(), message: format!("Contact {} not in database, performing directory lookup...", recipient) }).unwrap_or_default());
+                                let request = request_identities(
+                                    &ClientInfo::Libthreema,
+                                    &config.minimal.common.config.directory_server_url,
+                                    &config.minimal.common.flavor,
+                                    &[receiver_identity],
+                                );
+                                match handle_identities_result(request.send(&http_client).await) {
+                                    Ok(identities) => {
+                                        let identities: Vec<libthreema::model::contact::ContactInit> = identities;
+                                        if let Some(init) = identities.into_iter().next() {
+                                            let new_contact = libthreema::model::contact::Contact::from(init);
+                                            // Store in database
+                                            database_contacts.borrow_mut().insert(receiver_identity, (new_contact.clone(), None));
+                                            Some(new_contact)
+                                        } else {
+                                            println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("Recipient {} not found in Threema directory", recipient) }).unwrap_or_default());
+                                            None
+                                        }
+                                    },
+                                    Err(e) => {
+                                        println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("Directory lookup failed for {}: {}", recipient, e) }).unwrap_or_default());
+                                        None
+                                    }
+                                }
+                            };
+
+                            if let Some(contact) = contact {
+                                let shared_secret = client_key.derive_csp_e2e_key(&contact.public_key);
+                                
+                                let message = libthreema::model::message::OutgoingMessage {
+                                    id: libthreema::common::MessageId::random(),
+                                    overrides: libthreema::model::message::MessageOverrides::default(),
+                                    created_at: (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64),
+                                    body: libthreema::model::message::OutgoingMessageBody::Contact(
+                                        libthreema::model::message::OutgoingContactMessageBody {
+                                            receiver_identity,
+                                            body: libthreema::model::message::ContactMessageBody::Text(
+                                                libthreema::model::message::TextMessage { text }
+                                            )
+                                        }
+                                    )
+                                };
+                                
+                                let outgoing_box = libthreema::csp_e2e::message::task::outgoing::encode_and_encrypt_message(
+                                    user_identity,
+                                    (None, libthreema::common::Delta::Update("Stephans digitaler Assistent")),
+                                    receiver_identity,
+                                    shared_secret,
+                                    &message,
+                                    libthreema::common::Nonce::random(),
+                                );
+                                
+                                if let Ok(msg_box) = libthreema::csp::payload::MessageWithMetadataBox::try_from(outgoing_box) {
+                                    let _ = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box)).await;
+                                }
                             }
                         }
+                    },
+                    Err(e) => {
+                        println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("JSON parse error: {}", e) }).unwrap_or_default());
                     }
                 }
                 current_line.clear();

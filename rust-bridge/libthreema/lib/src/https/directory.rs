@@ -142,7 +142,7 @@ struct IdentitiesRequest<'request> {
 }
 
 /// Request identity properties tied to a set of identities.
-pub(crate) fn request_identities(
+pub fn request_identities(
     client_info: &ClientInfo,
     directory_server_url: &DirectoryServerBaseUrl,
     mode: &Flavor,
@@ -242,7 +242,7 @@ struct IdentitiesResponse {
 /// Process the identities result and map it to all valid identities.
 ///
 /// IMPORTANT: Identities that do not exist or have already been revoked will not be included!
-pub(crate) fn handle_identities_result(result: HttpsResult) -> Result<Vec<ContactInit>, HttpsEndpointError> {
+pub fn handle_identities_result(result: HttpsResult) -> Result<Vec<ContactInit>, HttpsEndpointError> {
     let response = handle_status(result, |_| None)?;
     let IdentitiesResponse { identities } = serde_json::from_slice(&response.body)?;
     Ok(identities.into_iter().map(ContactInit::from).collect())

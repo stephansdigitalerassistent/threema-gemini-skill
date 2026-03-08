@@ -837,6 +837,18 @@ impl IncomingMessageBody {
                 Self::Group(IncomingGroupMessageBody { group_identity, body })
             },
 
+            CspE2eMessageType::ForwardSecurityEnvelope => {
+                let _ = reader.skip(reader.remaining());
+                Self::Contact(ContactMessageBody::Text(TextMessage {
+                    text: "[FS Verschlüsselte Nachricht - Bitte PFS in App deaktivieren]".to_owned(),
+                }))
+            },
+            CspE2eMessageType::ForwardSecurityEnvelope => {
+                let _ = reader.skip(reader.remaining());
+                Self::Contact(ContactMessageBody::Text(TextMessage {
+                    text: "[FS Verschlüsselte Nachricht - Bitte PFS in App deaktivieren]".to_owned(),
+                }))
+            },
             // TODO(LIB-16): Decode the rest
             _ => {
                 return Err(IncomingMessageError::InvalidMessage(
