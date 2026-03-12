@@ -1,7 +1,9 @@
-const { spawn } = require('child_process');
-const { exec } = require('child_process');
+const { spawn, exec } = require('child_process');
 const fs = require('fs');
+const fsPromises = fs.promises;
 const path = require('path');
+const util = require('util');
+const execAsync = util.promisify(exec);
 const { addMessage, formatHistoryForPrompt, trackConsumption } = require('/home/ubuntu/.gemini/skills/common/history');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
@@ -9,6 +11,30 @@ const THREEMA_ID = process.env.THREEMA_ID;
 const THREEMA_CLIENT_KEY = process.env.THREEMA_CLIENT_KEY;
 const BRIDGE_PATH = path.join(__dirname, '../rust-bridge/target/release/threema-gemini-bridge');
 const LOG_FILE = '/home/ubuntu/threema-listener.log';
+const GEMINI_TIMEOUT = 60000; // 60 seconds
+
+let activeTasks = 0;
+const MAX_CONCURRENCY = 3;
+const taskQueue = [];
+
+async function processQueue() {
+    if (activeTasks >= MAX_CONCURRENCY || taskQueue.length === 0) return;
+    activeTasks++;
+    const task = taskQueue.shift();
+    try {
+        await task();
+    } catch (e) {
+        log(`Task error: ${e.message}`);
+    } finally {
+        activeTasks--;
+        processQueue();
+    }
+}
+
+function enqueueTask(task) {
+    taskQueue.push(task);
+    processQueue();
+}
 
 if (!THREEMA_ID || !THREEMA_CLIENT_KEY) {
     console.error("Please set THREEMA_ID and THREEMA_CLIENT_KEY environment variables.");
@@ -33,14 +59,14 @@ const bridge = spawn(BRIDGE_PATH, [
     env: { ...process.env, RUST_LOG: 'debug' }
 });
 
-bridge.stdout.on('data', (data) => {
+bridge.stdout.on('data', async (data) => {
     const lines = data.toString().split('\n');
     for (const line of lines) {
         if (!line.trim()) continue;
         try {
             const msg = JSON.parse(line);
             if (msg.type === 'Message') {
-                handleMessage(msg);
+                await handleMessage(msg);
             } else if (msg.type === 'HandshakeComplete') {
                 log('Handshake complete. Connected to Threema server.');
                 // Send startup message to Stephan
@@ -111,31 +137,40 @@ async function handleMessage(msg) {
     try {
         const instruction = `Follow core instructions in /home/ubuntu/ASSISTANT_INSTRUCTIONS.md. Message from ${userName} via Threema.`;
         
-        addMessage(senderId, 'threema', userName, msg.text);
-        const historyContext = formatHistoryForPrompt(senderId, 'threema');
+        await addMessage(senderId, 'threema', userName, msg.text);
+        const historyContext = await formatHistoryForPrompt(senderId, 'threema');
 
         const fullQuery = instruction + historyContext + "\n\nUser message: " + msg.text;
         
         log(`Asking Gemini for response to ${userName}...`);
+
+        const promptPath = path.join('/tmp', `threema_prompt_${senderId}_${Date.now()}.txt`);
+        await fsPromises.writeFile(promptPath, fullQuery);
+
+        const modeFlag = (userName === 'Stephan') ? '--approval-mode yolo' : '--approval-mode plan';
         
-        const promptPath = path.join('/tmp', `threema_prompt_${senderId}.txt`);
-        fs.writeFileSync(promptPath, fullQuery);
+        enqueueTask(async () => {
+            try {
+                const { stdout } = await execAsync(`/home/ubuntu/gemini-wrapper.js ${modeFlag} --prompt-file "${promptPath}"`, { encoding: 'utf-8', timeout: GEMINI_TIMEOUT, env: { ...process.env, LANG: 'en_US.UTF-8' } });
+                
+                let response = stdout.trim();
 
-        exec(`/home/ubuntu/gemini-wrapper.js --approval-mode yolo --prompt-file "${promptPath}"`, { encoding: 'utf-8' }, (error, stdout, stderr) => {
-            if (fs.existsSync(promptPath)) fs.unlinkSync(promptPath);
-            
-            if (error) {
+                await trackConsumption('threema', fullQuery.length, response.length);
+                await addMessage(senderId, 'threema', 'Assistant', response);
+
+                // Send response back to Threema
+                bridge.stdin.write(JSON.stringify({ type: 'SendMessage', recipient: senderId, text: response }) + '\n');
+                log(`Gemini response: ${response}`);
+            } catch (error) {
                 log(`Gemini Error: ${error.message}`);
-                return;
+                if (error.killed) {
+                    bridge.stdin.write(JSON.stringify({ type: 'SendMessage', recipient: senderId, text: "⌛ Die Anfrage hat zu lange gedauert (Timeout)." }) + '\n');
+                }
+            } finally {
+                try {
+                    await fsPromises.unlink(promptPath);
+                } catch (e) {}
             }
-            let response = stdout.trim();
-
-            trackConsumption('threema', fullQuery.length, response.length);
-            addMessage(senderId, 'threema', 'Assistant', response);
-
-            // Send response back to Threema
-            bridge.stdin.write(JSON.stringify({ type: 'SendMessage', recipient: senderId, text: response }) + '\n');
-            log(`Gemini response: ${response}`);
         });
     } catch (error) {
         log(`ERROR: ${error.message}`);

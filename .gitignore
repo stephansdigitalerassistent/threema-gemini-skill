@@ -1,3 +1,5 @@
 rust-bridge/target/
 node_modules/
 .env
+data/
+*.png
