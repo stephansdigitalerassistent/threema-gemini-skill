@@ -71,6 +71,43 @@ log(`Starting Threema OpenClaw Listener for ${identity.identity}...`);
 const GROUPS_FILE = path.join(DATA_DIR, 'groups.json');
 const observedGroupMembers = new Map<string, Set<string>>();
 
+import * as http from 'node:http';
+
+const ipcServer = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/send') {
+        let body = '';
+        req.on('data', chunk => body += chunk.toString());
+        req.on('end', async () => {
+            try {
+                const data = JSON.parse(body);
+                if (data.to && data.message && client) {
+                    if (data.to.includes('-')) {
+                        // Assume it's a group creator-groupId
+                        const [creator, groupIdHex] = data.to.split('-');
+                        const groupId = Buffer.from(groupIdHex, 'hex');
+                        const members = Array.from(observedGroupMembers.get(data.to) || [creator]).filter((id: string) => id !== identity.identity);
+                        await client.sendGroupTextMessage(creator, groupId, members, data.message);
+                    } else {
+                        await client.sendTextMessage(data.to, data.message);
+                    }
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true }));
+                } else {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: 'Missing to or message fields or client not ready' }));
+                }
+            } catch (e: any) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: e.message }));
+            }
+        });
+    } else {
+        res.writeHead(404);
+        res.end();
+    }
+});
+ipcServer.listen(3003, '127.0.0.1', () => log('IPC Server listening on port 3003'));
+
 function loadGroups() {
     try {
         if (fs.existsSync(GROUPS_FILE)) {
@@ -110,6 +147,20 @@ const client = new MediatorClient({
             const msgIdStr = msg.messageId.toString();
             log(`[DEBUG] Raw envelope received from ${msg.senderIdentity}, type: ${msg.type}, id: ${msgIdStr}`);
             
+            // Dump unknown/control messages (not text, media, or basic receipts)
+            const isTextOrMediaOrReceipt = [1, 65, 2, 4, 5, 6, 70, 128, 130].includes(msg.type);
+            if (!isTextOrMediaOrReceipt) {
+                try {
+                    const dumpDir = path.join(DATA_DIR, 'unknown_messages');
+                    if (!fs.existsSync(dumpDir)) fs.mkdirSync(dumpDir, { recursive: true });
+                    const dumpPath = path.join(dumpDir, `msg_type_${msg.type}_${Date.now()}.bin`);
+                    fs.writeFileSync(dumpPath, msg.body);
+                    log(`[DEBUG] Saved raw binary dump of message type ${msg.type} to ${dumpPath}`);
+                } catch(e: any) {
+                    log(`Failed to dump message type ${msg.type}: ${e.message}`);
+                }
+            }
+
             // Send receipt (Seen = 2)
             client.sendDeliveryReceipt(msg.senderIdentity, [msgIdStr], 2).catch(err => {
                 log(`Error sending receipt for ${msgIdStr}: ${err.message}`);
@@ -133,18 +184,16 @@ const client = new MediatorClient({
                 } else {
                     text = "(Empty group message)";
                 }
-            } else if (msg.type === 131 || msg.type === 0x4a) { // Group Control / Setup
+            } else if (msg.type === 0x4a || msg.type === 74) { // Group Setup / Member sync
                 try {
-                    if (msg.body.length >= 16) {
-                        const creator = new TextDecoder().decode(msg.body.subarray(0, 8)).replace(/\0+$/g, '');
-                        const groupId = msg.body.subarray(8, 16);
+                    if (msg.body.length >= 8) {
+                        const creator = msg.senderIdentity;
+                        const groupId = msg.body.subarray(0, 8);
                         const groupIdHex = Buffer.from(groupId).toString('hex');
                         const groupKey = `${creator}-${groupIdHex}`;
-                        log(`[GROUP DEBUG] Received group control from ${msg.senderIdentity}. Creator: ${creator}, GroupId: ${groupIdHex}, FullKey: ${groupKey}`);
                         
-                        // Parse members from the rest of the body (each 8 bytes)
-                        const membersSet = observedGroupMembers.get(groupKey) || new Set([STEPHAN_THREEMA_ID || '']);
-                        for (let i = 16; i + 8 <= msg.body.length; i += 8) {
+                        const membersSet = new Set([creator, STEPHAN_THREEMA_ID || '']);
+                        for (let i = 8; i + 8 <= msg.body.length; i += 8) {
                             const memberId = new TextDecoder().decode(msg.body.subarray(i, i + 8)).replace(/\0+$/g, '');
                             if (memberId && /^[A-Z0-9*]{8}$/.test(memberId)) {
                                 membersSet.add(memberId);
@@ -152,11 +201,28 @@ const client = new MediatorClient({
                         }
                         observedGroupMembers.set(groupKey, membersSet);
                         saveGroups();
-                        log(`Updated group ${groupKey} members from control message. Total: ${membersSet.size}`);
+                        log(`[GROUP SETUP] Synced members for ${groupKey}. Total: ${membersSet.size}.`);
                     }
-                } catch (e: any) {
-                    log(`Error parsing group control: ${e.message}`);
-                }
+                } catch (e: any) { log(`Error parsing group setup: ${e.message}`); }
+            } else if (msg.type === 0x4c || msg.type === 76) { // Group Leave
+                try {
+                    if (msg.body.length >= 16) {
+                        const creator = new TextDecoder().decode(msg.body.subarray(0, 8)).replace(/\0+$/g, '');
+                        const groupId = msg.body.subarray(8, 16);
+                        const groupIdHex = Buffer.from(groupId).toString('hex');
+                        const groupKey = `${creator}-${groupIdHex}`;
+                        
+                        const membersSet = observedGroupMembers.get(groupKey);
+                        if (membersSet && membersSet.has(msg.senderIdentity)) {
+                            membersSet.delete(msg.senderIdentity);
+                            observedGroupMembers.set(groupKey, membersSet);
+                            saveGroups();
+                            log(`[GROUP LEAVE] Removed ${msg.senderIdentity} from ${groupKey}. Total left: ${membersSet.size}.`);
+                        }
+                    }
+                } catch (e: any) { log(`Error parsing group leave: ${e.message}`); }
+            } else if ([0x4b, 75, 131].includes(msg.type)) { // Group Name / Group Reaction
+                log(`[GROUP DEBUG] Ignored group control type ${msg.type} from ${msg.senderIdentity}.`);
             } else if ([2, 4, 5, 6, 70].includes(msg.type)) { // Image, Audio, Video, File, Group File
                 try {
                     let bodyToSave = msg.body;

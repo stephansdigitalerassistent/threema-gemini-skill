@@ -35,7 +35,7 @@ client.on('cspReady', async () => {
         const msgId = await client.sendTextMessage(recipientId, message);
         console.log(`✅ Message sent successfully! (ID: ${msgId})`);
         setTimeout(() => {
-            client.close();
+            client.disconnect();
             process.exit(0);
         }, 2000);
     } catch (err) {
