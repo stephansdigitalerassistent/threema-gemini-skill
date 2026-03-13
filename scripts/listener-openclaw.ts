@@ -50,16 +50,18 @@ function enqueueTask(task: () => Promise<void>) {
     processQueue();
 }
 
-function log(msg: string) {
+async function log(msg: string) {
     const timestamp = new Date().toISOString();
     const fullMsg = `[${timestamp}] ${msg}\n`;
     process.stdout.write(fullMsg);
-    fs.appendFileSync(LOG_FILE, fullMsg);
+    try {
+        await fsPromises.appendFile(LOG_FILE, fullMsg);
+    } catch (e) {}
 }
 
 const identityPath = resolveThreemaIdentityPath(DATA_DIR);
 if (!fs.existsSync(identityPath)) {
-    log("ERROR: No Threema identity found. Please run pairing script first.");
+    console.error("ERROR: No Threema identity found. Please run pairing script first.");
     process.exit(1);
 }
 
@@ -122,15 +124,15 @@ function loadGroups() {
     }
 }
 
-function saveGroups() {
+async function saveGroups() {
     try {
         const data: Record<string, string[]> = {};
         observedGroupMembers.forEach((members, key) => {
             data[key] = Array.from(members);
         });
-        fs.writeFileSync(GROUPS_FILE, JSON.stringify(data, null, 2));
+        await fsPromises.writeFile(GROUPS_FILE, JSON.stringify(data, null, 2));
     } catch (e: any) {
-        log(`Error saving groups: ${e.message}`);
+        await log(`Error saving groups: ${e.message}`);
     }
 }
 
@@ -140,30 +142,34 @@ const client = new MediatorClient({
     identity,
     dataDir: DATA_DIR,
     nickname: process.env.THREEMA_NICKNAME,
-    onEnvelope: (envelope) => {
-        log(`[DEBUG] onEnvelope triggered`);
+    onEnvelope: async (envelope) => {
+        await log(`[DEBUG] onEnvelope triggered`);
         if (envelope.incomingMessage) {
             const msg = envelope.incomingMessage;
             const msgIdStr = msg.messageId.toString();
-            log(`[DEBUG] Raw envelope received from ${msg.senderIdentity}, type: ${msg.type}, id: ${msgIdStr}`);
+            await log(`[DEBUG] Raw envelope received from ${msg.senderIdentity}, type: ${msg.type}, id: ${msgIdStr}`);
             
             // Dump unknown/control messages (not text, media, or basic receipts)
             const isTextOrMediaOrReceipt = [1, 65, 2, 4, 5, 6, 70, 128, 130].includes(msg.type);
             if (!isTextOrMediaOrReceipt) {
                 try {
                     const dumpDir = path.join(DATA_DIR, 'unknown_messages');
-                    if (!fs.existsSync(dumpDir)) fs.mkdirSync(dumpDir, { recursive: true });
+                    try {
+                        await fsPromises.access(dumpDir);
+                    } catch (e) {
+                        await fsPromises.mkdir(dumpDir, { recursive: true });
+                    }
                     const dumpPath = path.join(dumpDir, `msg_type_${msg.type}_${Date.now()}.bin`);
-                    fs.writeFileSync(dumpPath, msg.body);
-                    log(`[DEBUG] Saved raw binary dump of message type ${msg.type} to ${dumpPath}`);
+                    await fsPromises.writeFile(dumpPath, msg.body);
+                    await log(`[DEBUG] Saved raw binary dump of message type ${msg.type} to ${dumpPath}`);
                 } catch(e: any) {
-                    log(`Failed to dump message type ${msg.type}: ${e.message}`);
+                    await log(`Failed to dump message type ${msg.type}: ${e.message}`);
                 }
             }
 
             // Send receipt (Seen = 2)
-            client.sendDeliveryReceipt(msg.senderIdentity, [msgIdStr], 2).catch(err => {
-                log(`Error sending receipt for ${msgIdStr}: ${err.message}`);
+            client.sendDeliveryReceipt(msg.senderIdentity, [msgIdStr], 2).catch(async err => {
+                await log(`Error sending receipt for ${msgIdStr}: ${err.message}`);
             });
 
             let text = "";
@@ -178,7 +184,7 @@ const client = new MediatorClient({
                     const creator = new TextDecoder().decode(msg.body.subarray(0, 8)).replace(/\0+$/g, '');
                     const groupId = msg.body.subarray(8, 16);
                     const groupIdHex = Buffer.from(groupId).toString('hex');
-                    log(`[GROUP DEBUG] Received group text from ${msg.senderIdentity}. Creator: ${creator}, GroupId: ${groupIdHex}, FullKey: ${creator}-${groupIdHex}`);
+                    await log(`[GROUP DEBUG] Received group text from ${msg.senderIdentity}. Creator: ${creator}, GroupId: ${groupIdHex}, FullKey: ${creator}-${groupIdHex}`);
                     groupContext = { creator, groupId };
                     text = new TextDecoder().decode(msg.body.subarray(16));
                 } else {
@@ -200,10 +206,10 @@ const client = new MediatorClient({
                             }
                         }
                         observedGroupMembers.set(groupKey, membersSet);
-                        saveGroups();
-                        log(`[GROUP SETUP] Synced members for ${groupKey}. Total: ${membersSet.size}.`);
+                        await saveGroups();
+                        await log(`[GROUP SETUP] Synced members for ${groupKey}. Total: ${membersSet.size}.`);
                     }
-                } catch (e: any) { log(`Error parsing group setup: ${e.message}`); }
+                } catch (e: any) { await log(`Error parsing group setup: ${e.message}`); }
             } else if (msg.type === 0x4c || msg.type === 76) { // Group Leave
                 try {
                     if (msg.body.length >= 16) {
@@ -216,13 +222,13 @@ const client = new MediatorClient({
                         if (membersSet && membersSet.has(msg.senderIdentity)) {
                             membersSet.delete(msg.senderIdentity);
                             observedGroupMembers.set(groupKey, membersSet);
-                            saveGroups();
-                            log(`[GROUP LEAVE] Removed ${msg.senderIdentity} from ${groupKey}. Total left: ${membersSet.size}.`);
+                            await saveGroups();
+                            await log(`[GROUP LEAVE] Removed ${msg.senderIdentity} from ${groupKey}. Total left: ${membersSet.size}.`);
                         }
                     }
-                } catch (e: any) { log(`Error parsing group leave: ${e.message}`); }
+                } catch (e: any) { await log(`Error parsing group leave: ${e.message}`); }
             } else if ([0x4b, 75, 131].includes(msg.type)) { // Group Name / Group Reaction
-                log(`[GROUP DEBUG] Ignored group control type ${msg.type} from ${msg.senderIdentity}.`);
+                await log(`[GROUP DEBUG] Ignored group control type ${msg.type} from ${msg.senderIdentity}.`);
             } else if ([2, 4, 5, 6, 70].includes(msg.type)) { // Image, Audio, Video, File, Group File
                 try {
                     let bodyToSave = msg.body;
@@ -233,25 +239,29 @@ const client = new MediatorClient({
                         bodyToSave = msg.body.subarray(16);
                     }
                     const tempDir = path.join(process.env.HOME || '/home/ubuntu', 'tmp', 'threema-media');
-                    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+                    try {
+                        await fsPromises.access(tempDir);
+                    } catch (e) {
+                        await fsPromises.mkdir(tempDir, { recursive: true });
+                    }
                     const ext = (msg.type === 2) ? '.jpg' : (msg.type === 4) ? '.ogg' : (msg.type === 5) ? '.mp4' : '.bin';
                     mediaPath = path.join(tempDir, `threema_${msgIdStr}${ext}`);
-                    fs.writeFileSync(mediaPath, bodyToSave);
-                    log(`Saved Threema media (type ${msg.type}) to ${mediaPath}`);
+                    await fsPromises.writeFile(mediaPath, bodyToSave);
+                    await log(`Saved Threema media (type ${msg.type}) to ${mediaPath}`);
                     text = `(Sent media of type ${msg.type})`;
                 } catch (e: any) {
-                    log(`Error saving Threema media: ${e.message}`);
+                    await log(`Error saving Threema media: ${e.message}`);
                 }
             }
 
             if (text || mediaPath) {
-                handleMessage(msg.senderIdentity, text, mediaPath, groupContext);
+                await handleMessage(msg.senderIdentity, text, mediaPath, groupContext);
             } else {
                 const typeName = msg.type === 128 ? 'Delivery Receipt' : msg.type === 130 ? 'Seen Receipt' : msg.type === 131 ? 'Group Control' : `Type ${msg.type}`;
-                log(`[DEBUG] Received ${typeName} from ${msg.senderIdentity} (id: ${msgIdStr})`);
+                await log(`[DEBUG] Received ${typeName} from ${msg.senderIdentity} (id: ${msgIdStr})`);
             }
         } else {
-            log(`[DEBUG] Envelope received without incomingMessage property.`);
+            await log(`[DEBUG] Envelope received without incomingMessage property.`);
         }
     }
 });
@@ -281,23 +291,23 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
     
     if (senderId === 'ECHOECHO') {
         const contextStr = groupContext ? `in group ${groupContext.creator}-${Buffer.from(groupContext.groupId).toString('hex')}` : 'directly';
-        log(`Ignored message from ECHOECHO ${contextStr} to prevent loop: ${text}`);
+        await log(`Ignored message from ECHOECHO ${contextStr} to prevent loop: ${text}`);
         return;
     }
 
     if (groupContext) {
         const groupKey = `${groupContext.creator}-${Buffer.from(groupContext.groupId).toString('hex')}`;
-        log(`[GROUP INFO] groupKey: ${groupKey}`);
+        await log(`[GROUP INFO] groupKey: ${groupKey}`);
         const membersSet = observedGroupMembers.get(groupKey) || new Set([STEPHAN_THREEMA_ID || '']);
         const oldSize = membersSet.size;
         membersSet.add(senderId);
         observedGroupMembers.set(groupKey, membersSet);
         if (membersSet.size !== oldSize) {
-            saveGroups();
+            await saveGroups();
         }
     }
 
-    log(`Received message from ${senderId}: ${text}`);
+    await log(`Received message from ${senderId}: ${text}`);
 
     let userName = "Someone";
     let userRole = "Someone else";
@@ -306,14 +316,14 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         userRole = "Stephan (Primary User)";
     } else {
         // Mirror unauthorized
-        log(`Mirroring unauthorized message from ${senderId} to Telegram.`);
+        await log(`Mirroring unauthorized message from ${senderId} to Telegram.`);
         const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
         const STEPHAN_TG_ID = process.env.STEPHAN_TG_ID;
         if (BOT_TOKEN && STEPHAN_TG_ID) {
             try {
                 const notifyText = `🔔 *Threema von ${senderId}*:\n\n${text}`;
                 const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-                fetch(url, {
+                await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -323,9 +333,108 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
                     })
                 });
             } catch (e: any) {
-                log(`Failed to notify Stephan: ${e.message}`);
+                await log(`Failed to notify Stephan: ${e.message}`);
             }
         }
+    }
+
+    if (text.trim().startsWith('/status') && userName === 'Stephan') {
+        enqueueTask(async () => {
+            try {
+                await log(`Generating status report for Stephan...`);
+                let statusMsg = "📊 *System Status*:\n\n";
+
+                try {
+                    const localStatsInfo = await execAsync('node /home/ubuntu/scripts/get-status.js', { encoding: 'utf-8' });
+                    statusMsg += localStatsInfo.stdout;
+                } catch (e: any) {
+                    statusMsg += "❌ Fehler beim Abrufen lokaler Stats.\n\n";
+                }
+
+                // Remote Quota Stats
+                const { getRemoteQuota } = require('/home/ubuntu/.gemini/skills/common/history');
+                const remoteQuota = await getRemoteQuota();
+                if (remoteQuota && Array.isArray(remoteQuota)) {
+                    statusMsg += `\n*🤖 Model Quotas*:\n`;
+                    statusMsg += `\`Model                Usage    Resets in\`\n`;
+
+                    const grouped: any = {};
+                    remoteQuota.forEach((q: any) => {
+                        if (q.error) return;
+                        const baseModel = q.model.replace('_vertex', '').toLowerCase();
+                        let family = "Other";
+                        if (baseModel.includes("lite")) family = "Lite";
+                        else if (baseModel.includes("pro")) family = "Pro";
+                        else if (baseModel.includes("flash")) family = "Flash";
+                        else if (baseModel.includes("veo")) family = "Veo";
+                        else if (baseModel.includes("imagen")) family = "Imagen";
+
+                        const currentPct = parseFloat(q.percent) || 0;
+                        if (family === "Other" && currentPct === 0) return;
+
+                        if (!grouped[family]) {
+                            grouped[family] = { ...q, display: family, minRemaining: currentPct };
+                        } else {
+                            if (currentPct < grouped[family].minRemaining) {
+                                grouped[family].minRemaining = currentPct;
+                                grouped[family].percent = q.percent;
+                                grouped[family].resetTime = q.resetTime || grouped[family].resetTime;
+                            }
+                        }
+                    });
+
+                    const order: any = { "Flash": 1, "Pro": 2, "Lite": 3, "Imagen": 4, "Veo": 5, "Other": 6 };
+                    Object.values(grouped).sort((a: any, b: any) => (order[a.display] || 99) - (order[b.display] || 99)).forEach((q: any) => {
+                        const resetDate = q.resetTime ? new Date(q.resetTime) : null;
+                        let resetStr = "-";
+                        if (resetDate && !isNaN(resetDate.getTime())) {
+                            const diffMs = resetDate.getTime() - Date.now();
+                            if (diffMs > 0) {
+                                const diffH = Math.floor(diffMs / 3600000);
+                                const diffM = Math.floor((diffMs % 3600000) / 60000);
+                                resetStr = `${diffH}h ${diffM}m`;
+                            } else {
+                                resetStr = "now";
+                            }
+                        }
+                        const modelName = ("*" + q.display + "*").padEnd(20).substring(0, 20);
+                        const usage = `${q.percent}%`.padStart(6);
+                        statusMsg += `\`${modelName} ${usage}    ${resetStr}\`\n`;
+                    });
+                } else {
+                    statusMsg += `\n⚠️ *Model Quotas*: Keine Daten verfügbar.\n`;
+                }
+
+                const { getConsumption } = require('/home/ubuntu/.gemini/skills/common/history');
+                const consumption = await getConsumption();
+                const calcCost = (inChars: number, outChars: number) => {
+                     return ((inChars / 1000000) * 0.075) + ((outChars / 1000000) * 0.30);
+                };
+
+                const costToday = calcCost(consumption?.today?.in || 0, consumption?.today?.out || 0);
+                const costYesterday = calcCost(consumption?.yesterday?.in || 0, consumption?.yesterday?.out || 0);
+                const costMonth = calcCost(consumption?.thisMonth?.in || 0, consumption?.thisMonth?.out || 0);
+
+                statusMsg += `\n*Verbrauch & Kosten* (Gemini 1.5 Flash):\n`;
+                statusMsg += `\`Zeitraum  In(k) Out(k)  Cost($)\`\n`;
+                statusMsg += `\`Heute   ${((consumption?.today?.in||0)/1000).toFixed(1).padStart(6)} ${((consumption?.today?.out||0)/1000).toFixed(1).padStart(6)} ${costToday.toFixed(4).padStart(8)}\`\n`;
+                statusMsg += `\`Gestern ${((consumption?.yesterday?.in||0)/1000).toFixed(1).padStart(6)} ${((consumption?.yesterday?.out||0)/1000).toFixed(1).padStart(6)} ${costYesterday.toFixed(4).padStart(8)}\`\n`;
+                statusMsg += `\`Monat   ${((consumption?.thisMonth?.in||0)/1000).toFixed(1).padStart(6)} ${((consumption?.thisMonth?.out||0)/1000).toFixed(1).padStart(6)} ${costMonth.toFixed(4).padStart(8)}\`\n`;
+
+                statusMsg += `\n📈 Aktuelle Rate: ${((consumption?.rates?.lastHour||0) / 1000).toFixed(1)}k Chars/h\n`;
+
+                if (groupContext) {
+                    const groupKey = `${groupContext.creator}-${Buffer.from(groupContext.groupId).toString('hex')}`;
+                    const members = Array.from(observedGroupMembers.get(groupKey) || [senderId]).filter(id => id !== identity.identity);
+                    await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, statusMsg);
+                } else {
+                    await client.sendTextMessage(senderId, statusMsg);
+                }
+            } catch (e: any) {
+                await log(`Failed to generate status: ${e.message}`);
+            }
+        });
+        return;
     }
 
     try {
@@ -344,15 +453,12 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
             fullQuery += `\n\nIMPORTANT: A media file was sent with this message and saved to: ${mediaPath}. Please read and analyze this file to fulfill the request.`;
         }
         
-        log(`Asking Gemini for response to ${userName}...`);
-        
-        // Use -p and pass query as argument, escaping it properly
-        const escapedQuery = fullQuery.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+        await log(`Asking Gemini for response to ${userName}...`);
         const modeFlag = (userName === 'Stephan') ? '--approval-mode yolo' : '--approval-mode plan';
         
         enqueueTask(async () => {
             try {
-                log(`Asking Gemini for response to ${userName}...`);
+                await log(`Asking Gemini for response to ${userName}...`);
                 const { stdout } = await runGeminiAsync([modeFlag.split(' ')[0], modeFlag.split(' ')[1], '-p', fullQuery], { 
                     timeout: GEMINI_TIMEOUT, 
                     env: { ...process.env, LANG: 'en_US.UTF-8' } 
@@ -361,7 +467,7 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
                 let response = cleanGeminiOutput(stdout);
                 
                 if (!response) {
-                    log('Warning: Cleaned response is empty. Using fallback.');
+                    await log('Warning: Cleaned response is empty. Using fallback.');
                     response = "*(Interner Prozess abgeschlossen)*";
                 }
 
@@ -373,40 +479,46 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
                     const groupKey = `${groupContext.creator}-${Buffer.from(groupContext.groupId).toString('hex')}`;
                     const members = Array.from(observedGroupMembers.get(groupKey) || [senderId]).filter(id => id !== identity.identity);
                     await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, response);
-                    log(`Gemini response sent to group (creator: ${groupContext.creator}): ${response}`);
+                    await log(`Gemini response sent to group (creator: ${groupContext.creator}): ${response}`);
                 } else {
                     await client.sendTextMessage(senderId, response);
-                    log(`Gemini response sent to ${senderId}: ${response}`);
+                    await log(`Gemini response sent to ${senderId}: ${response}`);
                 }
             } catch (error: any) {
-                log(`Gemini Error: ${error.message}`);
+                await log(`Gemini Error: ${error.message}`);
                 if (error.killed) {
                     await client.sendTextMessage(senderId, "⌛ Die Anfrage hat zu lange gedauert (Timeout).");
+                }
+            } finally {
+                if (mediaPath) {
+                    try {
+                        await fsPromises.unlink(mediaPath);
+                    } catch (e) {}
                 }
             }
         });
     } catch (error: any) {
-        log(`ERROR: ${error.message}`);
+        await log(`ERROR: ${error.message}`);
     }
 }
 
-client.on('cspReady', () => {
-    log('🔐 Threema CSP handshake completed. Ready.');
+client.on('cspReady', async () => {
+    await log('🔐 Threema CSP handshake completed. Ready.');
     
     // Heartbeat to keep connection alive (every 2 minutes)
-    setInterval(() => {
+    setInterval(async () => {
         if (client.isCspReady() && STEPHAN_THREEMA_ID) {
             client.sendTypingIndicator(STEPHAN_THREEMA_ID, false).catch(() => {});
         }
     }, 120000);
 });
 
-client.on('close', (code, reason) => {
-    log(`Connection closed: ${code} ${reason}`);
+client.on('close', async (code, reason) => {
+    await log(`Connection closed: ${code} ${reason}`);
     process.exit(1);
 });
 
-client.connect().catch(err => {
-    log(`FATAL: ${err.message}`);
+client.connect().catch(async err => {
+    await log(`FATAL: ${err.message}`);
     process.exit(1);
 });
