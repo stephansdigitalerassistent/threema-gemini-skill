@@ -11,7 +11,7 @@ const THREEMA_ID = process.env.THREEMA_ID;
 const THREEMA_CLIENT_KEY = process.env.THREEMA_CLIENT_KEY;
 const BRIDGE_PATH = path.join(__dirname, '../rust-bridge/target/release/threema-gemini-bridge');
 const LOG_FILE = '/home/ubuntu/threema-listener.log';
-const GEMINI_TIMEOUT = 60000; // 60 seconds
+const GEMINI_TIMEOUT = 86400000; // 60 seconds
 
 let activeTasks = 0;
 const MAX_CONCURRENCY = 3;

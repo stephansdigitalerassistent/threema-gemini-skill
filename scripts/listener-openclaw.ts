@@ -23,7 +23,7 @@ const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
 
 const LOG_FILE = '/home/ubuntu/threema-listener.log';
-const GEMINI_TIMEOUT = 60000; // 60 seconds
+const GEMINI_TIMEOUT = 86400000; // 60 seconds
 
 let activeTasks = 0;
 const MAX_CONCURRENCY = 3;
@@ -277,6 +277,12 @@ function cleanGeminiOutput(text: string): string {
 async function handleMessage(senderId: string, text: string, mediaPath: string | null = null, groupContext: { creator: string, groupId: Uint8Array } | null = null) {
     if (senderId === identity.identity) {
         return; // Ignore self
+    }
+    
+    if (senderId === 'ECHOECHO') {
+        const contextStr = groupContext ? `in group ${groupContext.creator}-${Buffer.from(groupContext.groupId).toString('hex')}` : 'directly';
+        log(`Ignored message from ECHOECHO ${contextStr} to prevent loop: ${text}`);
+        return;
     }
 
     if (groupContext) {
