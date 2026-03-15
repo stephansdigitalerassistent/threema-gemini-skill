@@ -79,6 +79,12 @@ pub enum BridgeOutput {
         text: String,
         timestamp: u64,
     },
+    Unknown {
+        sender: String,
+        message_type: i32,
+        data_hex: String,
+        timestamp: u64,
+    },
     Log {
         level: String,
         message: String,
@@ -107,17 +113,51 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
     }
 
     fn add_or_update_incoming_message(&mut self, message: libthreema::model::message::IncomingMessage) -> Result<(), libthreema::model::provider::ProviderError> {
-        println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "debug".to_string(), message: format!("Provider: received message from {}", message.sender_identity) }).unwrap_or_default());
-        use libthreema::model::message::{IncomingMessageBody, ContactMessageBody};
-        if let IncomingMessageBody::Contact(contact_body) = &message.body {
-            if let ContactMessageBody::Text(text_msg) = contact_body {
-                println!("{}", serde_json::to_string(&BridgeOutput::Message {
-                    sender: message.sender_identity.to_string(),
-                    text: text_msg.text.clone(),
-                    timestamp: message.created_at,
-                }).unwrap_or_default());
-            } else {
-                println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "debug".to_string(), message: "Provider: non-text message".to_string() }).unwrap_or_default());
+        use libthreema::model::message::{IncomingMessageBody, ContactMessageBody, GroupMessageBody};
+        match &message.body {
+            IncomingMessageBody::Contact(contact_body) => {
+                match contact_body {
+                    ContactMessageBody::Text(text_msg) => {
+                        println!("BRIDGE-JSON: {}", serde_json::to_string(&BridgeOutput::Message {
+                            sender: message.sender_identity.to_string(),
+                            text: text_msg.text.clone(),
+                            timestamp: message.created_at,
+                        }).unwrap_or_default());
+                    },
+                    ContactMessageBody::Unknown { r#type, data } => {
+                        println!("BRIDGE-JSON: {}", serde_json::to_string(&BridgeOutput::Unknown {
+                            sender: message.sender_identity.to_string(),
+                            message_type: *r#type as i32,
+                            data_hex: HEXLOWER.encode(data),
+                            timestamp: message.created_at,
+                        }).unwrap_or_default());
+                    },
+                    _ => {
+                        println!("BRIDGE-JSON: {}", serde_json::to_string(&BridgeOutput::Log { level: "debug".to_string(), message: format!("Provider: other contact message type: {:?}", contact_body.message_type()) }).unwrap_or_default());
+                    }
+                }
+            },
+            IncomingMessageBody::Group(group_msg) => {
+                match &group_msg.body {
+                    GroupMessageBody::Text(text_msg) => {
+                        println!("BRIDGE-JSON: {}", serde_json::to_string(&BridgeOutput::Message {
+                            sender: format!("*{:x}", group_msg.group_identity.group_id), // Group ID marker
+                            text: text_msg.text.clone(),
+                            timestamp: message.created_at,
+                        }).unwrap_or_default());
+                    },
+                    GroupMessageBody::Unknown { r#type, data } => {
+                        println!("BRIDGE-JSON: {}", serde_json::to_string(&BridgeOutput::Unknown {
+                            sender: format!("*{:x}", group_msg.group_identity.group_id),
+                            message_type: *r#type as i32,
+                            data_hex: HEXLOWER.encode(data),
+                            timestamp: message.created_at,
+                        }).unwrap_or_default());
+                    },
+                    _ => {
+                        println!("BRIDGE-JSON: {}", serde_json::to_string(&BridgeOutput::Log { level: "debug".to_string(), message: format!("Provider: other group message type: {:?}", group_msg.body.message_type()) }).unwrap_or_default());
+                    }
+                }
             }
         }
         self.inner.add_or_update_incoming_message(message)

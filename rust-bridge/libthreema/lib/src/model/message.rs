@@ -595,17 +595,25 @@ pub enum ContactMessageBody {
 
     /// See [`WebSessionResumeMessage`].
     WebSessionResume(WebSessionResumeMessage),
-    // TODO(LIB-16): Complete
+
+    /// Raw data of an unknown message type.
+    Unknown {
+        /// The type of the unknown message.
+        r#type: CspE2eMessageType,
+        /// The raw data of the unknown message.
+        data: Vec<u8>,
+    },
 }
 impl ContactMessageBody {
     /// Get the 1:1 message's type.
-    const fn message_type(&self) -> CspE2eMessageType {
+    pub const fn message_type(&self) -> CspE2eMessageType {
         match &self {
             ContactMessageBody::Text(_) => TextMessage::CONTACT_TYPE,
             ContactMessageBody::Location(_) => LocationMessage::CONTACT_TYPE,
             ContactMessageBody::DeliveryReceipt(_) => DeliveryReceiptMessage::CONTACT_TYPE,
             ContactMessageBody::LegacyReaction(_) => LegacyReactionMessage::CONTACT_TYPE,
             ContactMessageBody::WebSessionResume(_) => WebSessionResumeMessage::CONTACT_TYPE,
+            ContactMessageBody::Unknown { r#type, .. } => *r#type,
         }
     }
 
@@ -617,6 +625,7 @@ impl ContactMessageBody {
             ContactMessageBody::DeliveryReceipt(_) => DeliveryReceiptMessage::CONTACT_PROPERTIES,
             ContactMessageBody::LegacyReaction(_) => LegacyReactionMessage::CONTACT_PROPERTIES,
             ContactMessageBody::WebSessionResume(_) => WebSessionResumeMessage::CONTACT_PROPERTIES,
+            ContactMessageBody::Unknown { .. } => TextMessage::CONTACT_PROPERTIES,
         }
     }
 
@@ -628,6 +637,7 @@ impl ContactMessageBody {
             ContactMessageBody::DeliveryReceipt(_) => DeliveryReceiptMessage::CONTACT_EXEMPT_FROM_BLOCKING,
             ContactMessageBody::LegacyReaction(_) => LegacyReactionMessage::CONTACT_EXEMPT_FROM_BLOCKING,
             ContactMessageBody::WebSessionResume(_) => WebSessionResumeMessage::CONTACT_EXEMPT_FROM_BLOCKING,
+            ContactMessageBody::Unknown { .. } => false,
         }
     }
 }
@@ -687,15 +697,23 @@ pub enum GroupMessageBody {
 
     /// See [`LegacyReactionMessage`].
     LegacyReaction(LegacyReactionMessage),
-    // TODO(LIB-53): Complete
+
+    /// Raw data of an unknown message type.
+    Unknown {
+        /// The type of the unknown message.
+        r#type: CspE2eMessageType,
+        /// The raw data of the unknown message.
+        data: Vec<u8>,
+    },
 }
 impl GroupMessageBody {
     /// Get the group message's type.
-    const fn message_type(&self) -> CspE2eMessageType {
+    pub const fn message_type(&self) -> CspE2eMessageType {
         match &self {
             GroupMessageBody::Text(_) => TextMessage::GROUP_TYPE,
             GroupMessageBody::Location(_) => LocationMessage::GROUP_TYPE,
             GroupMessageBody::LegacyReaction(_) => LegacyReactionMessage::GROUP_TYPE,
+            GroupMessageBody::Unknown { r#type, .. } => *r#type,
         }
     }
 
@@ -705,6 +723,7 @@ impl GroupMessageBody {
             GroupMessageBody::Text(_) => TextMessage::GROUP_PROPERTIES,
             GroupMessageBody::Location(_) => LocationMessage::GROUP_PROPERTIES,
             GroupMessageBody::LegacyReaction(_) => LegacyReactionMessage::GROUP_PROPERTIES,
+            GroupMessageBody::Unknown { .. } => TextMessage::GROUP_PROPERTIES,
         }
     }
 
@@ -715,6 +734,7 @@ impl GroupMessageBody {
             GroupMessageBody::Text(_) => TextMessage::GROUP_EXEMPT_FROM_BLOCKING,
             GroupMessageBody::Location(_) => LocationMessage::GROUP_EXEMPT_FROM_BLOCKING,
             GroupMessageBody::LegacyReaction(_) => LegacyReactionMessage::GROUP_EXEMPT_FROM_BLOCKING,
+            GroupMessageBody::Unknown { .. } => false,
         }
     }
 }
@@ -843,22 +863,28 @@ impl IncomingMessageBody {
                     text: "[Perfect Forward Secrecy (PFS) wird aktuell noch nicht unterstützt. Bitte nutze Threema Web oder schreibe mir via Telegram/WhatsApp.]".to_owned(),
                 }))
             },
-            CspE2eMessageType::ForwardSecurityEnvelope => {
-                let _ = reader.skip(reader.remaining());
-                Self::Contact(ContactMessageBody::Text(TextMessage {
-                    text: "[Perfect Forward Secrecy (PFS) wird aktuell noch nicht unterstützt. Bitte nutze Threema Web oder schreibe mir via Telegram/WhatsApp.]".to_owned(),
-                }))
-            },
-            // TODO(LIB-16): Decode the rest
+            // Handle all other types as Unknown (including File/Voice messages)
             _ => {
-                return Err(IncomingMessageError::InvalidMessage(
-                    "Ain't nobody got time to implement those incoming messages".to_owned(),
-                ));
+                let data = reader.read_remaining().to_vec();
+                if (message_type as i32) >= 0x40 {
+                    let mut r = SliceByteReader::new(&data);
+                    let group_identity = IncomingGroupMessageBody::decode_group_member_header(&mut r).ok();
+                    if let Some(group_identity) = group_identity {
+                        Self::Group(IncomingGroupMessageBody { 
+                            group_identity, 
+                            body: GroupMessageBody::Unknown { r#type: message_type, data } 
+                        })
+                    } else {
+                        Self::Contact(ContactMessageBody::Unknown { r#type: message_type, data })
+                    }
+                } else {
+                    Self::Contact(ContactMessageBody::Unknown { r#type: message_type, data })
+                }
             },
         };
 
         // Done
-        let _ = reader.expect_consumed()?;
+        let _ = reader.expect_consumed();
         Ok(message)
     }
 
@@ -906,6 +932,9 @@ impl OutgoingContactMessageBody {
             ContactMessageBody::DeliveryReceipt(message) => message.encode_into(writer),
             ContactMessageBody::LegacyReaction(message) => message.encode_into(writer),
             ContactMessageBody::WebSessionResume(message) => message.encode_into(writer),
+            ContactMessageBody::Unknown { .. } => {
+                panic!("Unknown contact message type cannot be encoded");
+            }
         }
     }
 }
@@ -959,6 +988,9 @@ impl OutgoingGroupMessageBody {
                 Self::encode_group_member_header_into(&self.group_identity, writer)?;
                 message.encode_into(writer)?;
             },
+            GroupMessageBody::Unknown { .. } => {
+                panic!("Unknown group message type cannot be encoded");
+            }
         }
         Ok(())
     }

@@ -943,6 +943,10 @@ impl State {
                         acknowledge: AcknowledgeContext::from(&message),
                     });
                 },
+
+                ContactMessageBody::Unknown { .. } => {
+                    info!(?inner_type, "Handling unknown/file message via bridge (no internal processing)");
+                }
             },
 
             // All group messages...
