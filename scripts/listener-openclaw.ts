@@ -632,14 +632,14 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         }
         
         await log(`Asking Gemini for response to ${userName}...`);
-        const modeFlag = (senderId === STEPHAN_THREEMA_ID) ? '--approval-mode yolo' : '--approval-mode plan';
+        const modeFlag = (senderId === STEPHAN_THREEMA_ID) ? '--approval-mode yolo' : '--approval-mode auto_edit';
         
         enqueueTask(async () => {
             try {
                 await log(`Asking Gemini for response to ${userName}...`);
                 const { stdout } = await runGeminiAsync([modeFlag.split(' ')[0], modeFlag.split(' ')[1], '-p', fullQuery], { 
                     timeout: GEMINI_TIMEOUT, 
-                    env: { ...process.env, LANG: 'en_US.UTF-8' } 
+                    env: { ...process.env, LANG: 'en_US.UTF-8', GEMINI_UI_INLINETHINKINGMODE: 'hidden' } 
                 });
                 
                 let response = cleanGeminiOutput(stdout);
