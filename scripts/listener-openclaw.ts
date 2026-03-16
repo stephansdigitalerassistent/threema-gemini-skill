@@ -430,30 +430,30 @@ const client = new MediatorClient({
     }
 });
 
-function cleanGeminiOutput(text: string): string {
+function cleanGeminiOutput(text) {
+    // 1. Prioritize explicit <REPLY> tags
+    const replyMatch = text.match(/<REPLY>([\s\S]*?)<\/REPLY>/i);
+    if (replyMatch) {
+        return replyMatch[1].trim();
+    }
+
+    // 2. Fallback logic if tags are missing
     let cleaned = text;
-    // Remove internal XML tags
-    cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/g, '');
-    cleaned = cleaned.replace(/<function_calls>[\s\S]*?<\/function_calls>/g, '');
-    cleaned = cleaned.replace(/<function_outputs>[\s\S]*?<\/function_outputs>/g, '');
-    cleaned = cleaned.replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, '');
-    // Remove markdown code blocks (often used for tool or system output)
-    cleaned = cleaned.replace(/```[\s\S]*?```/g, '');
-    // Remove conversational filler
-    cleaned = cleaned.split('\n')
-        .filter(line => {
-            const t = line.trim();
-            return !t.startsWith('I will now') && 
-                   !t.startsWith('I am now') && 
-                   !t.startsWith('Ich werde nun') && 
-                   !t.startsWith('I will ') && 
-                   !t.startsWith("I'll ") &&
-                   !t.startsWith('Ich werde ') &&
-                   !t.startsWith('Ich prüfe ') &&
-                   !t.startsWith('Ich suche ');
-        })
-        .join('\n');
-    // Clean up whitespace
+    cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+    cleaned = cleaned.replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, '');
+    cleaned = cleaned.replace(/<function_outputs>[\s\S]*?<\/function_outputs>/gi, '');
+    cleaned = cleaned.replace(/<tool_calls>[\s\S]*?<\/tool_calls>/gi, '');
+    
+    let lines = cleaned.split('\n');
+    let filtered = lines.filter(line => {
+        const l = line.trim();
+        if (l.startsWith('I will now') || l.startsWith('I am now') || l.startsWith('Ich werde nun')) return false;
+        // Basic fallback filters just in case
+        if (l.startsWith('Error executing tool') || l.startsWith('[LocalAgentExecutor]') || (l.startsWith('Attempt') && l.includes('failed'))) return false;
+        return true;
+    });
+    
+    cleaned = filtered.join('\n');
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
     return cleaned.trim();
 }
