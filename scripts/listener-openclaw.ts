@@ -324,7 +324,7 @@ const client = new MediatorClient({
                 } catch (e: any) { await log(`Error parsing group leave: ${e.message}`); }
             } else if ([131].includes(msg.type)) { // Group Reaction
                 await log(`[GROUP DEBUG] Ignored group control type ${msg.type} from ${msg.senderIdentity}.`);
-            } else if ([2, 4, 5, 6, 70].includes(msg.type)) { // Image, Audio, Video, File, Group File
+            } else if ([2, 4, 5, 6, 23, 70].includes(msg.type)) { // Image, Audio, Video, File, Type 23 (Voice), Group File
                 try {
                     let bodyToSave = msg.body;
                     if (msg.type === 70 && msg.body.length > 16) {
@@ -339,17 +339,17 @@ const client = new MediatorClient({
                     } catch (e) {
                         await fsPromises.mkdir(tempDir, { recursive: true });
                     }
-                    const ext = (msg.type === 2) ? '.jpg' : (msg.type === 4) ? '.ogg' : (msg.type === 5) ? '.mp4' : '.bin';
+                    const ext = (msg.type === 2) ? '.jpg' : (msg.type === 4 || msg.type === 23) ? '.ogg' : (msg.type === 5) ? '.mp4' : '.bin';
                     mediaPath = path.join(tempDir, `threema_${msgIdStr}${ext}`);
                     await fsPromises.writeFile(mediaPath, bodyToSave);
                     await log(`Saved Threema media (type ${msg.type}) to ${mediaPath}`);
                     
                     // --- NEUES FEATURE: TRANSKRIPTION ---
-                    if (msg.type === 4 || msg.type === 6 || msg.type === 70) {
+                    if (msg.type === 4 || msg.type === 6 || msg.type === 23 || msg.type === 70) {
                         const { transcribeAudio } = require('/home/ubuntu/scripts/transcribe');
                         let audioToTranscribe: string | null = null;
                         
-                        if (msg.type === 4) {
+                        if (msg.type === 4 || msg.type === 23) {
                             audioToTranscribe = mediaPath;
                             await log(`Direkte Sprachnachricht erkannt.`);
                         } else {
@@ -388,25 +388,39 @@ const client = new MediatorClient({
                                     const contact = observedContacts.get(msg.senderIdentity);
                                     const displayName = contact?.firstName || contact?.nickname || msg.senderIdentity;
                                     
-                                    if (groupContext) {
-                                        const header = `Nachricht von @${displayName}:`;
-                                        const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
-                                        const group = observedGroups.get(groupIdHex);
-                                        const members = Array.from(group?.members || [msg.senderIdentity]).filter(id => id !== identity.identity);
-                                        await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, `${header}\n\n${transcript}`);
+                                    // Wir speichern die Transkription in 'text', damit handleMessage sie verarbeitet
+                                    // und Gemini darauf reagieren kann.
+                                    // Prüfe, ob die Transkription eine direkte Aufforderung an den Assistenten enthält.
+                                    // Wenn nicht, sende die Transkription nur an den Nutzer zurück und unterbreche die Weiterleitung an Gemini.
+                                    const lowerTranscript = transcript.toLowerCase();
+                                    const isCommand = lowerTranscript.includes('stephan') || lowerTranscript.includes('assistent') || lowerTranscript.includes('hey') || lowerTranscript.includes('hallo'); // Passe die Triggerwörter nach Bedarf an.
+                                    
+                                    const header = `Transkription (@${displayName}):\n\n`;
+                                    const fullTranscriptMsg = header + transcript;
+
+                                    if (isCommand) {
+                                        // Falls es wie ein Befehl aussieht, speichere ihn in text für Gemini
+                                        text = `[Sprachnachricht von @${displayName}]: \n${transcript}`;
+                                        await log(`Transkription als Befehl erkannt: ${transcript.substring(0, 50)}...`);
                                     } else {
-                                        // Direkte Nachricht
-                                        const header = `Transkription der Sprachnachricht von @${displayName}:`;
-                                        await client.sendTextMessage(msg.senderIdentity, `${header}\n\n${transcript}`);
+                                        // Falls nicht, schicke die Transkription einfach zurück und breche die Bearbeitung ab.
+                                        if (groupContext) {
+                                            const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
+                                            const group = observedGroups.get(groupIdHex);
+                                            const members = Array.from(group?.members || [msg.senderIdentity]).filter(id => id !== identity.identity);
+                                            await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, fullTranscriptMsg);
+                                        } else {
+                                            await client.sendTextMessage(msg.senderIdentity, fullTranscriptMsg);
+                                        }
+                                        await log(`Transkription als reine Info zurückgesendet: ${transcript.substring(0, 50)}...`);
+                                        text = ""; // Leer setzen, damit es nicht an Gemini geht.
                                     }
-                                    await log(`Transkription erfolgreich gesendet.`);
+                                    await log(`Transkription erfolgreich erstellt: ${transcript.substring(0, 50)}...`);
                                 }
                             } catch (e: any) {
                                 await log(`Transkriptionsfehler: ${e.message}`);
+                                text = `(Fehler bei der Transkription der Sprachnachricht)`;
                             }
-                            // Wir setzen text auf null, damit Gemini nicht zusätzlich getriggert wird
-                            text = ""; 
-                            mediaPath = null;
                         } else {
                             text = `(Sent media of type ${msg.type})`;
                         }
