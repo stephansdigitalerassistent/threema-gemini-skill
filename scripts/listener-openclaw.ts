@@ -18,6 +18,7 @@ dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
 // Load history helpers (CommonJS)
 const { addMessage, formatHistoryForPrompt, trackConsumption } = require('/home/ubuntu/.gemini/skills/common/history');
 const { runGeminiAsync } = require('/home/ubuntu/.gemini/skills/common/gemini-manager');
+const { addPendingRequest, updateRequestStatus, getIncompleteRequests } = require('/home/ubuntu/db_helper.js');
 
 const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
@@ -634,8 +635,23 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         await log(`Asking Gemini for response to ${userName}...`);
         const modeFlag = (senderId === STEPHAN_THREEMA_ID) ? '--approval-mode yolo' : '--approval-mode auto_edit';
         
+        let groupContextObj: any = null;
+        if (groupContext) {
+             groupContextObj = {
+                 creator: groupContext.creator,
+                 groupIdHex: Buffer.from(groupContext.groupId).toString('hex')
+             };
+        }
+
+        const requestId = await addPendingRequest('threema', senderId, text, {
+             userName,
+             groupContext: groupContextObj,
+             mediaPath
+        });
+
         enqueueTask(async () => {
             try {
+                await updateRequestStatus(requestId, 'processing');
                 await log(`Asking Gemini for response to ${userName}...`);
                 const { stdout } = await runGeminiAsync([modeFlag.split(' ')[0], modeFlag.split(' ')[1], '-p', fullQuery], { 
                     timeout: GEMINI_TIMEOUT, 
@@ -663,8 +679,11 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
                     await client.sendTextMessage(senderId, response);
                     await log(`Gemini response sent to ${senderId}: ${response}`);
                 }
+                
+                await updateRequestStatus(requestId, 'completed', response);
             } catch (error: any) {
                 await log(`Gemini Error: ${error.message}`);
+                await updateRequestStatus(requestId, 'failed', error.message);
                 if (error.killed) {
                     await client.sendTextMessage(senderId, "⌛ Die Anfrage hat zu lange gedauert (Timeout).");
                 }
@@ -691,7 +710,80 @@ client.on('cspReady', async () => {
             client.sendTypingIndicator(STEPHAN_THREEMA_ID, false).catch(() => {});
         }
     }, 120000);
+
+    setTimeout(resumeRequests, 3000);
 });
+
+async function resumeRequests() {
+    try {
+        const pending = await getIncompleteRequests();
+        const myPending = pending.filter((r: any) => r.source === 'threema');
+        if (myPending.length === 0) return;
+
+        await log(`[RECOVERY] Found ${myPending.length} incomplete Threema requests. Resuming...`);
+        for (const req of myPending) {
+            await log(`[RECOVERY] Resuming request ${req.id} from ${req.chat_id}...`);
+            const senderId = req.chat_id;
+            const text = req.content;
+            const userName = req.metadata.userName;
+            const groupContextObj = req.metadata.groupContext;
+            const mediaPath = req.metadata.mediaPath;
+
+            // Notify user
+            if (groupContextObj) {
+                const group = observedGroups.get(groupContextObj.groupIdHex);
+                const members = Array.from(group?.members || [senderId]).filter(id => id !== identity.identity);
+                await client.sendGroupTextMessage(groupContextObj.creator, Buffer.from(groupContextObj.groupIdHex, 'hex'), members, "🔄 *System-Neustart*: Ich habe deine letzte Anfrage gerade wieder aufgenommen und bearbeite sie jetzt fertig...");
+            } else {
+                await client.sendTextMessage(senderId, "🔄 *System-Neustart*: Ich habe deine letzte Anfrage gerade wieder aufgenommen und bearbeite sie jetzt fertig...");
+            }
+
+            let chatContext = groupContextObj ? `GROUP_CHAT` : 'DIRECT_MESSAGE';
+            let instruction = `Follow core instructions in /home/ubuntu/.gemini/ASSISTANT_INSTRUCTIONS.md.\n\nCRITICAL MESSENGER RULES:\n1. CHAT TYPE: ${chatContext}.\n2. OUTPUT FILTER: Respond ONLY with the final natural text.\n3. CONTACT MANAGEMENT: Proactively manage all names and contacts.\n\nMessage from ${userName} via Threema.`;
+
+            if (senderId !== STEPHAN_THREEMA_ID) {
+                instruction += ` (CRITICAL ROLE: You are Stephan's digital assistant. Be helpful, polite and brief.) `;
+            }
+
+            const historyContext = await formatHistoryForPrompt(senderId, 'threema');
+            let fullQuery = instruction + historyContext + "\n\nUser message: " + text;
+            if (mediaPath) fullQuery += `\n\nIMPORTANT: Media saved to: ${mediaPath}. Analyze this file.`;
+
+            const modeFlag = (senderId === STEPHAN_THREEMA_ID) ? '--approval-mode yolo' : '--approval-mode auto_edit';
+
+            enqueueTask(async () => {
+                try {
+                    await updateRequestStatus(req.id, 'processing');
+                    await log(`Asking Gemini (Recovery) for response to ${userName}...`);
+                    const { stdout } = await runGeminiAsync([modeFlag.split(' ')[0], modeFlag.split(' ')[1], '-p', fullQuery], { 
+                        timeout: GEMINI_TIMEOUT, 
+                        env: { ...process.env, LANG: 'en_US.UTF-8', GEMINI_UI_INLINETHINKINGMODE: 'hidden' } 
+                    });
+                    
+                    let response = cleanGeminiOutput(stdout);
+                    if (!response) response = "*(Interner Prozess abgeschlossen)*";
+
+                    await trackConsumption('threema', fullQuery.length, response.length);
+                    await addMessage(senderId, 'threema', 'Assistant', response);
+
+                    if (groupContextObj) {
+                        const group = observedGroups.get(groupContextObj.groupIdHex);
+                        const members = Array.from(group?.members || [senderId]).filter(id => id !== identity.identity);
+                        await client.sendGroupTextMessage(groupContextObj.creator, Buffer.from(groupContextObj.groupIdHex, 'hex'), members, response);
+                    } else {
+                        await client.sendTextMessage(senderId, response);
+                    }
+                    await updateRequestStatus(req.id, 'completed', response);
+                } catch (error: any) {
+                    await log(`Recovery Gemini Error: ${error.message}`);
+                    await updateRequestStatus(req.id, 'failed', error.message);
+                }
+            });
+        }
+    } catch (e: any) {
+        await log(`[RECOVERY ERROR] ${e.message}`);
+    }
+}
 
 client.on('close', async (code, reason) => {
     await log(`Connection closed: ${code} ${reason}`);
