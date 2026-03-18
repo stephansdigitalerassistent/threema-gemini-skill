@@ -19,6 +19,7 @@ dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
 const { addMessage, formatHistoryForPrompt, trackConsumption } = require('/home/ubuntu/.gemini/skills/common/history');
 const { runGeminiAsync } = require('/home/ubuntu/.gemini/skills/common/gemini-manager');
 const { addPendingRequest, updateRequestStatus, getIncompleteRequests } = require('/home/ubuntu/db_helper.js');
+const { checkIsCommand, createApprovalRequest } = require('/home/ubuntu/.gemini/skills/common/approval-manager');
 
 const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
@@ -101,6 +102,39 @@ const ipcServer = http.createServer((req, res) => {
                 } else {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ success: false, error: 'Missing to or message fields or client not ready' }));
+                }
+            } catch (e: any) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: e.message }));
+            }
+        });
+    } else if (req.method === 'POST' && req.url === '/delete') {
+        let body = '';
+        req.on('data', chunk => body += chunk.toString());
+        req.on('end', async () => {
+            try {
+                const data = JSON.parse(body);
+                if (data.to && data.messageId && client) {
+                    const fallbackText = "*(Nachricht zurückgezogen)*";
+                    if (data.to.includes('-')) {
+                        const [creator, groupIdHex] = data.to.split('-');
+                        const groupId = Buffer.from(groupIdHex, 'hex');
+                        const group = observedGroups.get(groupIdHex);
+                        const members = Array.from(group?.members || [creator]).filter((id: string) => id !== identity.identity);
+                        await client.sendGroupEditMessage(creator, groupId, members, BigInt(data.messageId), fallbackText);
+                        await log(`[IPC] Deleted group message ${data.messageId} in ${data.to}`);
+                    } else {
+                        // Direct message edit/delete isn't explicitly supported by this OpenClaw version's API surface yet, 
+                        // but we handle groups which is the primary use case.
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ success: false, error: 'Direct message deletion not yet implemented in API' }));
+                        return;
+                    }
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true }));
+                } else {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: 'Missing to or messageId fields or client not ready' }));
                 }
             } catch (e: any) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -223,7 +257,7 @@ const client = new MediatorClient({
             await log(`[DEBUG] Raw envelope received from ${msg.senderIdentity}, type: ${msg.type}, id: ${msgIdStr}`);
             
             // Dump unknown/control messages (not text, media, or basic receipts)
-            const isTextOrMediaOrReceipt = [1, 65, 2, 4, 5, 6, 70, 128, 130].includes(msg.type);
+            const isTextOrMediaOrReceipt = [1, 65, 2, 4, 5, 6, 23, 70, 128, 129, 130, 131].includes(msg.type);
             if (!isTextOrMediaOrReceipt) {
                 try {
                     const dumpDir = path.join(DATA_DIR, 'unknown_messages');
@@ -348,11 +382,11 @@ const client = new MediatorClient({
                         const { transcribeAudio } = require('/home/ubuntu/scripts/transcribe');
                         let audioToTranscribe: string | null = null;
                         
-                        if (msg.type === 4 || msg.type === 23) {
+                        if (msg.type === 4) {
                             audioToTranscribe = mediaPath;
                             await log(`Direkte Sprachnachricht erkannt.`);
                         } else {
-                            // Datei oder Gruppendatei (Blob-Pointer)
+                            // Datei oder Gruppendatei (Blob-Pointer), Typ 23 ist auch ein Blob-Pointer
                             await log(`Datei/Gruppendatei erkannt (Typ ${msg.type}). Prüfe auf Audio...`);
                             try {
                                 const resolved = (msg.type === 70) 
@@ -435,14 +469,42 @@ const client = new MediatorClient({
             if (text || mediaPath) {
                 await handleMessage(msg.senderIdentity, text, mediaPath, groupContext);
             } else {
-                const typeName = msg.type === 128 ? 'Delivery Receipt' : msg.type === 130 ? 'Seen Receipt' : msg.type === 131 ? 'Group Control' : `Type ${msg.type}`;
-                await log(`[DEBUG] Received ${typeName} from ${msg.senderIdentity} (id: ${msgIdStr})`);
+                let typeName = `Type ${msg.type}`;
+                let bodyInfo = "";
+                
+                if (msg.type === 128) typeName = 'DELIVERY RECEIPT (Delivered)';
+                if (msg.type === 129) typeName = 'READ RECEIPT (Read)';
+                if (msg.type === 130) typeName = 'USER TYPING / SEEN';
+                if (msg.type === 131) typeName = 'GROUP CONTROL / REACTION';
+
+                if (msg.body && msg.body.length > 0 && msg.body.length <= 32) {
+                    try {
+                        bodyInfo = ` (Body: ${Buffer.from(msg.body).toString('hex')})`;
+                    } catch (e) {}
+                }
+
+                await log(`[RECEIPT/CONTROL] Received ${typeName} from ${msg.senderIdentity} for msgId: ${msgIdStr}${bodyInfo}`);
             }
         } else {
             await log(`[DEBUG] Envelope received without incomingMessage property.`);
         }
     }
 });
+
+const originalSendTextMessage = client.sendTextMessage.bind(client);
+client.sendTextMessage = async (recipient: string, text: string) => {
+    try {
+        await require('/home/ubuntu/db_helper.js').logMessage({
+            direction: 'outbound',
+            channel: 'threema',
+            senderId: 'assistant',
+            senderName: 'Assistant',
+            groupId: null, // Threema openclaw group sends might not be just plain sendTextMessage, but let's leave it null for now
+            content: text || '[Non-Text]'
+        });
+    } catch(e: any) { await log('DB Log Outbound Error: ' + e.message); }
+    return await originalSendTextMessage(recipient, text);
+};
 
 function cleanGeminiOutput(text) {
     // 1. Prioritize explicit <REPLY> tags
@@ -482,6 +544,18 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         await log(`Ignored message from ECHOECHO ${contextStr} to prevent loop: ${text}`);
         return;
     }
+
+    try {
+        const groupIdHex = groupContext ? Buffer.from(groupContext.groupId).toString('hex') : null;
+        await require('/home/ubuntu/db_helper.js').logMessage({
+            direction: 'inbound',
+            channel: 'threema',
+            senderId: senderId,
+            senderName: senderId, // Nickname fetching is async or cached, sticking to ID for safety
+            groupId: groupIdHex,
+            content: text || (mediaPath ? `[Media: ${path.basename(mediaPath)}]` : '[Unknown]')
+        });
+    } catch(e: any) { await log('DB Log Inbound Error: ' + e.message); }
 
     let groupName: string | undefined;
     if (groupContext) {
@@ -661,6 +735,24 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
              groupContext: groupContextObj,
              mediaPath
         });
+
+        let shouldIntercept = false;
+        if (groupContext && senderId === STEPHAN_THREEMA_ID && text) {
+            shouldIntercept = await checkIsCommand(text);
+        }
+
+        if (shouldIntercept) {
+            const taskQueryObj = {
+                instruction,
+                historyContext,
+                messageText: text,
+                mediaPath
+            };
+            const approvalId = await createApprovalRequest('Threema Group', senderId, text, taskQueryObj);
+            await log(`Intercepted group command from Stephan, created approval request ${approvalId}`);
+            await updateRequestStatus(requestId, 'completed');
+            return; // Skip standard processing
+        }
 
         enqueueTask(async () => {
             try {
