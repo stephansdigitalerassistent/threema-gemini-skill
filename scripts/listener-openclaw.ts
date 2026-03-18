@@ -24,7 +24,7 @@ const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
 
 const LOG_FILE = '/home/ubuntu/threema-listener.log';
-const GEMINI_TIMEOUT = 86400000; // 60 seconds
+const GEMINI_TIMEOUT = 60000; // 60 seconds
 
 let activeTasks = 0;
 const MAX_CONCURRENCY = 3;
@@ -292,13 +292,12 @@ const client = new MediatorClient({
                 } catch (e: any) { await log(`Error parsing group setup: ${e.message}`); }
             } else if (msg.type === 0x4b || msg.type === 75) { // Group Name
                 try {
-                    if (msg.body.length >= 16) {
-                        const creator = new TextDecoder().decode(msg.body.subarray(0, 8)).replace(/\0+$/g, '');
-                        const groupId = msg.body.subarray(8, 16);
+                    if (msg.body.length >= 8) {
+                        const groupId = msg.body.subarray(0, 8);
                         const groupIdHex = Buffer.from(groupId).toString('hex');
-                        const groupName = new TextDecoder().decode(msg.body.subarray(16)).replace(/\0+$/g, '');
+                        const groupName = new TextDecoder().decode(msg.body.subarray(8)).replace(/\0+$/g, '');
                         
-                        const existing = observedGroups.get(groupIdHex) || { members: new Set([creator]) };
+                        const existing = observedGroups.get(groupIdHex) || { members: new Set([msg.senderIdentity]) };
                         existing.name = groupName;
                         observedGroups.set(groupIdHex, existing);
                         await saveGroups();
