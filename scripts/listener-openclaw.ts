@@ -397,6 +397,7 @@ const client = new MediatorClient({
                                     const mediaType = resolved.descriptor.mediaType || "";
                                     const fileName = resolved.descriptor.fileName || "";
                                     const isAudio = mediaType.startsWith("audio/") || fileName.endsWith(".aac") || fileName.endsWith(".m4a") || fileName.endsWith(".ogg");
+                                    const isVideo = mediaType.startsWith("video/") || fileName.endsWith(".mp4") || fileName.endsWith(".mov");
                                     
                                     if (isAudio) {
                                         await log(`Audio-Blob gefunden (${mediaType}). Lade herunter...`);
@@ -406,6 +407,19 @@ const client = new MediatorClient({
                                         audioToTranscribe = blobPath;
                                     } else {
                                         await log(`Datei ist kein unterstütztes Audio (${mediaType} / ${fileName}).`);
+                                        if (isVideo) {
+                                            const caption = resolved.descriptor.caption || "";
+                                            if (caption.trim().length > 0) {
+                                                text = `[Video mit Text/Auftrag]: ${caption}`;
+                                                mediaPath = null;
+                                            } else {
+                                                text = "";
+                                                mediaPath = null;
+                                                await log(`Video ohne Text wird ignoriert.`);
+                                            }
+                                        } else {
+                                            text = `(Sent media of type ${msg.type}: ${mediaType})`;
+                                        }
                                     }
                                 }
                             } catch (e: any) {
@@ -423,40 +437,27 @@ const client = new MediatorClient({
                                     
                                     // Wir speichern die Transkription in 'text', damit handleMessage sie verarbeitet
                                     // und Gemini darauf reagieren kann.
-                                    // Prüfe, ob die Transkription eine direkte Aufforderung an den Assistenten enthält.
-                                    // Wenn nicht, sende die Transkription nur an den Nutzer zurück und unterbreche die Weiterleitung an Gemini.
-                                    const lowerTranscript = transcript.toLowerCase();
-                                    const isCommand = lowerTranscript.includes('stephan') || lowerTranscript.includes('assistent') || lowerTranscript.includes('hey') || lowerTranscript.includes('hallo'); // Passe die Triggerwörter nach Bedarf an.
+                                    text = `[Sprachnachricht von @${displayName}]: \n${transcript}`;
+                                    await log(`Transkription für Gemini bereitgestellt: ${transcript.substring(0, 50)}...`);
                                     
                                     const header = `Transkription (@${displayName}):\n\n`;
                                     const fullTranscriptMsg = header + transcript;
 
-                                    if (isCommand) {
-                                        // Falls es wie ein Befehl aussieht, speichere ihn in text für Gemini
-                                        text = `[Sprachnachricht von @${displayName}]: \n${transcript}`;
-                                        await log(`Transkription als Befehl erkannt: ${transcript.substring(0, 50)}...`);
-                                    } else {
-                                        // Falls nicht, schicke die Transkription einfach zurück und breche die Bearbeitung ab.
-                                        if (groupContext) {
-                                            const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
-                                            const group = observedGroups.get(groupIdHex);
-                                            const members = Array.from(group?.members || [msg.senderIdentity]).filter(id => id !== identity.identity);
-                                            await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, fullTranscriptMsg);
-                                        } else {
-                                            await client.sendTextMessage(msg.senderIdentity, fullTranscriptMsg);
-                                        }
-                                        await log(`Transkription als reine Info zurückgesendet: ${transcript.substring(0, 50)}...`);
-                                        text = ""; // Leer setzen, damit es nicht an Gemini geht.
-                                    }
                                     await log(`Transkription erfolgreich erstellt: ${transcript.substring(0, 50)}...`);
                                 }
                             } catch (e: any) {
                                 await log(`Transkriptionsfehler: ${e.message}`);
                                 text = `(Fehler bei der Transkription der Sprachnachricht)`;
                             }
-                        } else {
-                            text = `(Sent media of type ${msg.type})`;
+                        } else if (text === "") {
+                            // Text is empty (e.g. video without caption), keep it empty
+                        } else if (!text || text.startsWith("(Sent media")) {
+                            if (!text) text = `(Sent media of type ${msg.type})`;
                         }
+                    } else if (msg.type === 5) {
+                        text = "";
+                        mediaPath = null;
+                        await log(`Legacy Video (Typ 5) wird ignoriert.`);
                     } else {
                         text = `(Sent media of type ${msg.type})`;
                     }
@@ -727,6 +728,11 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         }
         
         await addMessage(senderId, 'threema', userName, text);
+
+        if (groupContext) {
+            // Group messages are now processed without requiring an explicit mention.
+        }
+
         const historyContext = await formatHistoryForPrompt(senderId, 'threema');
 
         let fullQuery = instruction + historyContext + "\n\nUser message: " + text;
@@ -781,8 +787,9 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
                 let response = cleanGeminiOutput(stdout);
                 
                 if (!response) {
-                    await log('Warning: Cleaned response is empty. Using fallback.');
-                    response = "*(Interner Prozess abgeschlossen)*";
+                    await log('Warning: Cleaned response is empty. Skipping output.');
+                    await updateRequestStatus(requestId, 'completed', '');
+                    return;
                 }
 
                 await trackConsumption('threema', fullQuery.length, response.length);
@@ -881,7 +888,11 @@ async function resumeRequests() {
                     });
                     
                     let response = cleanGeminiOutput(stdout);
-                    if (!response) response = "*(Interner Prozess abgeschlossen)*";
+                    if (!response) {
+                        await log('Warning: (Recovery) Cleaned response is empty. Skipping output.');
+                        await updateRequestStatus(req.id, 'completed', '');
+                        return;
+                    }
 
                     await trackConsumption('threema', fullQuery.length, response.length);
                     await addMessage(senderId, 'threema', 'Assistant', response);
