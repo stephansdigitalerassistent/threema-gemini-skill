@@ -25,7 +25,7 @@ const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
 
 const LOG_FILE = '/home/ubuntu/threema-listener.log';
-const GEMINI_TIMEOUT = 60000; // 60 seconds
+const GEMINI_TIMEOUT = 600000; // 10 minutes
 
 let activeTasks = 0;
 const MAX_CONCURRENCY = 3;
@@ -506,21 +506,28 @@ client.sendTextMessage = async (recipient: string, text: string) => {
     return await originalSendTextMessage(recipient, text);
 };
 
-function cleanGeminiOutput(text) {
-    // 1. Prioritize explicit <REPLY> tags
-    const replyMatch = text.match(/<REPLY>([\s\S]*?)<\/REPLY>/i);
-    if (replyMatch) {
-        return replyMatch[1].trim();
+function cleanGeminiOutput(text: string): string {
+    let result = text;
+
+    // 1. If there's a <REPLY> tag, simply take everything after it.
+    const replyIndex = text.toUpperCase().indexOf('<REPLY>');
+    if (replyIndex !== -1) {
+        // Start right after the <REPLY> tag
+        const startIdx = replyIndex + '<REPLY>'.length;
+        result = text.substring(startIdx);
+    } else {
+        // Fallback: If no <REPLY> tag, we need to clean up thinking blocks
+        result = result.replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/gi, '');
     }
 
-    // 2. Fallback logic if tags are missing
-    let cleaned = text;
-    cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
-    cleaned = cleaned.replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, '');
-    cleaned = cleaned.replace(/<function_outputs>[\s\S]*?<\/function_outputs>/gi, '');
-    cleaned = cleaned.replace(/<tool_calls>[\s\S]*?<\/tool_calls>/gi, '');
-    
-    let lines = cleaned.split('\n');
+    // 2. Clean up any closing tags or remaining internal tags
+    result = result.replace(/<\/REPLY>/gi, '');
+    result = result.replace(/<\/thinking>/gi, '');
+    result = result.replace(/<function_calls>[\s\S]*?(?:<\/function_calls>|$)/gi, '');
+    result = result.replace(/<function_outputs>[\s\S]*?(?:<\/function_outputs>|$)/gi, '');
+    result = result.replace(/<tool_calls>[\s\S]*?(?:<\/tool_calls>|$)/gi, '');
+
+    let lines = result.split('\n');
     let filtered = lines.filter(line => {
         const l = line.trim();
         if (l.startsWith('I will now') || l.startsWith('I am now') || l.startsWith('Ich werde nun')) return false;
@@ -529,9 +536,9 @@ function cleanGeminiOutput(text) {
         return true;
     });
     
-    cleaned = filtered.join('\n');
-    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-    return cleaned.trim();
+    result = filtered.join('\n');
+    result = result.replace(/\n{3,}/g, '\n\n');
+    return result.trim();
 }
 
 async function handleMessage(senderId: string, text: string, mediaPath: string | null = null, groupContext: { creator: string, groupId: Uint8Array } | null = null) {
@@ -585,8 +592,16 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         const STEPHAN_TG_ID = process.env.STEPHAN_TG_ID;
         if (BOT_TOKEN && STEPHAN_TG_ID) {
             try {
-                const groupInfo = groupName ? ` in Gruppe "${groupName}"` : "";
-                const notifyText = `🔔 *Threema von ${userName}* (${senderId})${groupInfo}:\n\n${text}`;
+                const groupInfo = groupName ? ` in Gruppe "<b>${groupName}</b>"` : "";
+                
+                // Escape HTML special characters in the raw text to prevent injection/crashing
+                const safeText = text
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;");
+
+                const notifyText = `🔔 <b>Threema von ${userName}</b> (${senderId})${groupInfo}:\n\n${safeText}`;
+                
                 const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
                 await fetch(url, {
                     method: 'POST',
@@ -594,7 +609,7 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
                     body: JSON.stringify({
                         chat_id: STEPHAN_TG_ID,
                         text: notifyText,
-                        parse_mode: 'Markdown'
+                        parse_mode: 'HTML'
                     })
                 });
             } catch (e: any) {
