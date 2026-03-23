@@ -449,6 +449,16 @@ const client = new MediatorClient({
                                     const fullTranscriptMsg = header + transcript;
 
                                     await log(`Transkription erfolgreich erstellt: ${transcript.substring(0, 50)}...`);
+                                    
+                                    // Transkription direkt in den Chat posten
+                                    if (groupContext) {
+                                        const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
+                                        const group = observedGroups.get(groupIdHex);
+                                        const members = Array.from(group?.members || [msg.senderIdentity]).filter((id: any) => id !== identity.identity);
+                                        await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, fullTranscriptMsg).catch(e => log(`Senden der Transkription fehlgeschlagen: ${e.message}`));
+                                    } else {
+                                        await client.sendTextMessage(msg.senderIdentity, fullTranscriptMsg).catch(e => log(`Senden der Transkription fehlgeschlagen: ${e.message}`));
+                                    }
                                 }
                             } catch (e: any) {
                                 await log(`Transkriptionsfehler: ${e.message}`);
