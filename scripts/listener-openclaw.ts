@@ -634,6 +634,36 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         }
     }
 
+    const isNaturalReminder = text.toLowerCase().includes('erinnere mich') || text.toLowerCase().startsWith('remind me');
+    if ((text.startsWith('/remind ') || isNaturalReminder) && senderId === STEPHAN_THREEMA_ID) {
+        const reminderQuery = text.startsWith('/remind ') ? text.substring(8).trim() : text;
+        enqueueTask(async () => {
+            try {
+                const prompt = `Du bist ein Zeit-Parser. Extrahiere Datum/Uhrzeit und die Nachricht aus diesem Text: "${reminderQuery}". 
+Aktuelle Lokalzeit in Zürich ist: ${new Date().toLocaleString('de-CH', { timeZone: 'Europe/Zurich' })}. 
+Gib NUR ein JSON Objekt zurück: {"time": "ISO_TIMESTAMP", "message": "DEINE_NACHRICHT"}. 
+WICHTIG: Erzeuge den ISO_TIMESTAMP für die Zürcher Zeitzone (Europa/Zurich).
+Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
+                
+                await log("Parsing reminder in-process (Threema)...");
+                const resultGemini = await runGeminiAsync(['--model', 'gemini-3.1-flash-lite-preview', '--approval-mode', 'yolo', '-p', prompt]);
+                const stdout = resultGemini.stdout;
+                const result = JSON.parse(stdout.substring(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1));
+                
+                const { addReminder } = require('/home/ubuntu/db_helper.js');
+                await addReminder(result.time, result.message);
+                
+                const dateStr = new Date(result.time).toLocaleString('de-CH', { timeZone: 'Europe/Zurich' });
+                await client.sendTextMessage(senderId, `✅ Erinnerung gespeichert: "${result.message}" am ${dateStr}`);
+            } catch (e: any) {
+                await log(`Reminder Error: ${e.message}`);
+                await client.sendTextMessage(senderId, "❌ Fehler beim Speichern der Erinnerung. Bitte versuche es präziser.");
+            }
+        });
+        if (mediaPath) try { await fsPromises.unlink(mediaPath); } catch (e) {}
+        return;
+    }
+
     if (text.trim().startsWith('/status') && senderId === STEPHAN_THREEMA_ID) {
         enqueueTask(async () => {
             try {
