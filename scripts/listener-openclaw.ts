@@ -323,8 +323,12 @@ const client = new MediatorClient({
                         observedGroups.set(groupKey, existing);
                         await saveGroups();
                         await log(`[GROUP SETUP] Synced members for ${groupKey}. Total: ${membersSet.size}.`);
-                    }
-                } catch (e: any) { await log(`Error parsing group setup: ${e.message}`); }
+
+                        // Send welcome message if this is a new group or we were just added
+                        const welcomeMsg = `/🤖 Hello! I'm Stephan's assistant. In this group, I only react to 'assistent', 'assistant', '${identity.identity}' or '/'. / Hallo! Ich bin Stephans Assistent. In dieser Gruppe reagiere ich nur auf 'assistent', 'assistant', '${identity.identity}' oder '/'.`;
+                        const members = Array.from(membersSet).filter((id: string) => id !== identity.identity);
+                        await client.sendGroupTextMessage(creator, groupId, members, welcomeMsg).catch(e => log(`Error sending welcome: ${e.message}`));
+                        }                } catch (e: any) { await log(`Error parsing group setup: ${e.message}`); }
             } else if (msg.type === 0x4b || msg.type === 75) { // Group Name
                 try {
                     if (msg.body.length >= 8) {
@@ -728,12 +732,19 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
             ? '/home/ubuntu/.gemini/ADMIN_FULL.md' 
             : '/home/ubuntu/.gemini/GUEST_FULL.md';
 
-        let instruction = `CRITICAL MESSENGER RULES:\n1. CHAT TYPE: ${chatContext}. ${groupContext ? 'In a GROUP_CHAT, coordinate with everyone.' : 'Direct conversation.'}\n2. Message from ${userName} via Threema.`;
+        let instruction = `CRITICAL MESSENGER RULES:\n1. CHAT TYPE: ${chatContext}. ${groupContext ? 'In a GROUP_CHAT, you MUST stay silent and NOT respond unless explicitly mentioned.' : 'Direct conversation.'}\n2. Message from ${userName} via Threema.`;
 
         await addMessage(senderId, 'threema', userName, text);
 
         if (groupContext) {
-            // Group messages are now processed without requiring an explicit mention.
+            const lowerQuery = (text || "").toLowerCase();
+            const botMention = identity.identity.toLowerCase();
+            const triggerWords = ['assistent', 'assistant', botMention];
+            const isMentioned = triggerWords.some(word => lowerQuery.includes(word)) || lowerQuery.startsWith('/');
+            if (!isMentioned) {
+                await log(`[DEBUG] Group message stored but ignored for Gemini (no explicit mention).`);
+                return;
+            }
         }
 
         const historyContext = await formatHistoryForPrompt(senderId, 'threema');
