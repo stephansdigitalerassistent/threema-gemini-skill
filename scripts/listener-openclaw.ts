@@ -17,8 +17,7 @@ dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
 
 // Load history helpers (CommonJS)
 const { addMessage, formatHistoryForPrompt, trackConsumption } = require('/home/ubuntu/.gemini/skills/common/history');
-const { runGeminiAsync } = require('/home/ubuntu/.gemini/skills/common/gemini-manager');
-const { determineRoute } = require('/home/ubuntu/.gemini/skills/common/router.js');
+const { runGeminiAsync, runSmartGemini } = require('/home/ubuntu/.gemini/skills/common/gemini-manager');
 const { addPendingRequest, updateRequestStatus, getIncompleteRequests } = require('/home/ubuntu/db_helper.js');
 const { checkIsCommand, createApprovalRequest } = require('/home/ubuntu/.gemini/skills/common/approval-manager');
 
@@ -811,23 +810,11 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
              mediaPath
         });
 
-        const { model: targetModel, interceptMessage } = await determineRoute(text, senderId === STEPHAN_THREEMA_ID);
-
-        if (interceptMessage) {
-            if (groupContext) {
-                const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
-                const group = observedGroups.get(groupIdHex);
-                const members = Array.from(group?.members || [senderId]).filter(id => id !== identity.identity);
-                await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, interceptMessage);
-            } else {
-                await client.sendTextMessage(senderId, interceptMessage);
-            }
-            await updateRequestStatus(requestId, 'completed', interceptMessage);
-            return;
-        }
+        // --- START NEUES SMART ROUTING ---
+        const isTrustedAdmin = (senderId === STEPHAN_THREEMA_ID);
 
         let shouldIntercept = false;
-        if (groupContext && senderId === STEPHAN_THREEMA_ID && text) {
+        if (groupContext && isTrustedAdmin && text) {
             shouldIntercept = await checkIsCommand(text);
         }
 
@@ -837,30 +824,50 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
                 historyContext,
                 messageText: text,
                 mediaPath,
-                systemPromptPath // Include for approval execution
+                systemPromptPath
             };
             const approvalId = await createApprovalRequest('Threema Group', senderId, text, taskQueryObj);
             await log(`Intercepted group command from Stephan, created approval request ${approvalId}`);
             await updateRequestStatus(requestId, 'completed');
-            return; // Skip standard processing
+            return;
         }
 
         enqueueTask(async () => {
             try {
                 await updateRequestStatus(requestId, 'processing');
-                await log(`Asking Gemini for response to ${userName} using model ${targetModel}...`);
-                const { stdout } = await runGeminiAsync(['--model', targetModel, modeFlag.split(' ')[0], modeFlag.split(' ')[1], '-p', fullQuery], { 
-                    timeout: GEMINI_TIMEOUT, 
-                    env: { 
-                        ...process.env, 
-                        LANG: 'en_US.UTF-8', 
-                        GEMINI_UI_INLINETHINKINGMODE: 'hidden',
-                        GEMINI_SYSTEM_MD: systemPromptPath
-                    } 
+                await log(`Asking Cognitive Proxy (Smart) for response to ${userName}...`);
+
+                const result = await runSmartGemini({
+                    message: fullQuery,
+                    userName,
+                    isTrustedAdmin,
+                    options: {
+                        timeout: GEMINI_TIMEOUT,
+                        env: {
+                            ...process.env,
+                            LANG: 'en_US.UTF-8',
+                            GEMINI_UI_INLINETHINKINGMODE: 'hidden',
+                            GEMINI_SYSTEM_MD: systemPromptPath
+                        }
+                    }
                 });
                 
-                let response = cleanGeminiOutput(stdout);
+                let response = cleanGeminiOutput(result.stdout || "");
                 
+                if (result.routingAction === 'intercept') {
+                    // Intercepted / Blocked (e.g. Pro required)
+                    if (groupContext) {
+                        const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
+                        const group = observedGroups.get(groupIdHex);
+                        const members = Array.from(group?.members || [senderId]).filter(id => id !== identity.identity);
+                        await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, response);
+                    } else {
+                        await client.sendTextMessage(senderId, response);
+                    }
+                    await updateRequestStatus(requestId, 'completed', response);
+                    return;
+                }
+
                 if (!response) {
                     await log('Warning: Cleaned response is empty. Skipping output.');
                     await updateRequestStatus(requestId, 'completed', '');
@@ -876,7 +883,7 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
                     const group = observedGroups.get(groupIdHex);
                     const members = Array.from(group?.members || [senderId]).filter(id => id !== identity.identity);
                     await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, response);
-                    await log(`Gemini response sent to group (creator: ${groupContext.creator}): ${response}`);
+                    await log(`Gemini response sent to group: ${response}`);
                 } else {
                     await client.sendTextMessage(senderId, response);
                     await log(`Gemini response sent to ${senderId}: ${response}`);
@@ -890,13 +897,10 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
                     await client.sendTextMessage(senderId, "⌛ Die Anfrage hat zu lange gedauert (Timeout).");
                 }
             } finally {
-                if (mediaPath) {
-                    try {
-                        await fsPromises.unlink(mediaPath);
-                    } catch (e) {}
-                }
+                if (mediaPath) try { await fsPromises.unlink(mediaPath); } catch (e) {}
             }
         });
+        // --- ENDE NEUES SMART ROUTING ---
     } catch (error: any) {
         await log(`ERROR: ${error.message}`);
     }
@@ -953,37 +957,44 @@ async function resumeRequests() {
             let fullQuery = instruction + historyContext + "\n\nUser message: " + text;
             if (mediaPath) fullQuery += `\n\nIMPORTANT: Media saved to: ${mediaPath}. Analyze this file.`;
 
-            const { model: targetModel, interceptMessage } = await determineRoute(text, senderId === STEPHAN_THREEMA_ID);
-
-            if (interceptMessage) {
-                if (groupContextObj) {
-                    const group = observedGroups.get(groupContextObj.groupIdHex);
-                    const members = Array.from(group?.members || [senderId]).filter(id => id !== identity.identity);
-                    await client.sendGroupTextMessage(groupContextObj.creator, Buffer.from(groupContextObj.groupIdHex, 'hex'), members, interceptMessage);
-                } else {
-                    await client.sendTextMessage(senderId, interceptMessage);
-                }
-                await updateRequestStatus(req.id, 'completed', interceptMessage);
-                continue;
-            }
-
-            const modeFlag = (senderId === STEPHAN_THREEMA_ID) ? '--approval-mode yolo' : '--approval-mode auto_edit';
+            const isTrustedAdmin = (senderId === STEPHAN_THREEMA_ID);
+            
+            await client.sendTypingIndicator(senderId, true).catch(() => {});
 
             enqueueTask(async () => {
                 try {
                     await updateRequestStatus(req.id, 'processing');
-                    await log(`Asking Gemini (Recovery) for response to ${userName} using model ${targetModel}...`);
-                    const { stdout } = await runGeminiAsync(['--model', targetModel, modeFlag.split(' ')[0], modeFlag.split(' ')[1], '-p', fullQuery], { 
-                        timeout: GEMINI_TIMEOUT, 
-                        env: { 
-                            ...process.env, 
-                            LANG: 'en_US.UTF-8', 
-                            GEMINI_UI_INLINETHINKINGMODE: 'hidden',
-                            GEMINI_SYSTEM_MD: systemPromptPath
-                        } 
+                    await log(`Asking Cognitive Proxy (Recovery Smart) for response to ${userName}...`);
+
+                    const result = await runSmartGemini({
+                        message: fullQuery,
+                        userName,
+                        isTrustedAdmin,
+                        options: {
+                            timeout: GEMINI_TIMEOUT,
+                            env: {
+                                ...process.env,
+                                LANG: 'en_US.UTF-8',
+                                GEMINI_UI_INLINETHINKINGMODE: 'hidden',
+                                GEMINI_SYSTEM_MD: systemPromptPath
+                            }
+                        }
                     });
                     
-                    let response = cleanGeminiOutput(stdout);
+                    let response = cleanGeminiOutput(result.stdout || "");
+
+                    if (result.routingAction === 'intercept') {
+                        if (groupContextObj) {
+                            const group = observedGroups.get(groupContextObj.groupIdHex);
+                            const members = Array.from(group?.members || [senderId]).filter(id => id !== identity.identity);
+                            await client.sendGroupTextMessage(groupContextObj.creator, Buffer.from(groupContextObj.groupIdHex, 'hex'), members, response);
+                        } else {
+                            await client.sendTextMessage(senderId, response);
+                        }
+                        await updateRequestStatus(req.id, 'completed', response);
+                        return;
+                    }
+
                     if (!response) {
                         await log('Warning: (Recovery) Cleaned response is empty. Skipping output.');
                         await updateRequestStatus(req.id, 'completed', '');
