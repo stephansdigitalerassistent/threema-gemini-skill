@@ -18,7 +18,7 @@ dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
 // Load history helpers (CommonJS)
 const { addMessage, formatHistoryForPrompt, trackConsumption } = require('/home/ubuntu/.gemini/skills/common/history');
 const { runGeminiAsync, runSmartGemini } = require('/home/ubuntu/.gemini/skills/common/gemini-manager');
-const { addPendingRequest, updateRequestStatus, getIncompleteRequests } = require('/home/ubuntu/db_helper.js');
+const { addPendingRequest, updateRequestStatus, getIncompleteRequests, enqueueTask: dbEnqueueTask, setSessionContext, getSessionContext } = require('/home/ubuntu/db_helper.js');
 const { checkIsCommand, createApprovalRequest } = require('/home/ubuntu/.gemini/skills/common/approval-manager');
 
 const DATA_DIR = path.join(SKILL_ROOT, 'data');
@@ -80,7 +80,10 @@ const observedContacts = new Map<string, { firstName?: string, lastName?: string
 import * as http from 'node:http';
 
 const ipcServer = http.createServer((req, res) => {
-    if (req.method === 'POST' && req.url === '/send') {
+    if (req.method === 'GET' && req.url === '/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, state: client.isCspReady() ? 'CONNECTED' : 'CONNECTING' }));
+    } else if (req.method === 'POST' && req.url === '/send') {
         let body = '';
         req.on('data', chunk => body += chunk.toString());
         req.on('end', async () => {
@@ -832,6 +835,21 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
             return;
         }
 
+        // --- ENTWICKLER-STEUERUNG (INTENT 4) ---
+        if (isTrustedAdmin && (text.startsWith('/ok dev') || text.startsWith('/ok commit') || text.startsWith('/fix'))) {
+            const devContext = await getSessionContext(senderId, 'developer');
+            if (devContext) {
+                await dbEnqueueTask({
+                    channel: 'threema', senderId: senderId, senderName: userName, groupId: groupIdHex,
+                    content: text,
+                    metadata: { ...devContext, systemPromptPath, isTrustedAdmin, requestId }
+                });
+                await updateRequestStatus(requestId, 'processing');
+                return;
+            }
+        }
+        // ----------------------------------------
+
         enqueueTask(async () => {
             try {
                 await updateRequestStatus(requestId, 'processing');
@@ -852,6 +870,14 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
                     }
                 });
                 
+                if (result.routingAction === 'developer_plan') {
+                    await setSessionContext(senderId, 'developer', {
+                        originalQuery: text,
+                        plan: result.stdout,
+                        files: result.files
+                    });
+                }
+
                 let response = cleanGeminiOutput(result.stdout || "");
                 
                 if (result.routingAction === 'intercept') {
