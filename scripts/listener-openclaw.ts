@@ -1049,6 +1049,11 @@ async function resumeRequests() {
     }
 }
 
+client.on('cspError', async (error) => {
+    await log(`[CRITICAL] CSP Encryption Error detected: ${error.message}. Forcing restart for self-healing...`);
+    process.exit(1);
+});
+
 client.on('close', async (code, reason) => {
     await log(`Connection closed: ${code} ${reason}`);
     process.exit(1);
