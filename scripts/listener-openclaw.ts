@@ -673,7 +673,7 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
                 let statusMsg = "📊 *System Status*:\n\n";
 
                 try {
-                    const localStatsInfo = await execAsync('node /home/ubuntu/scripts/get-status.js', { encoding: 'utf-8' });
+                    const localStatsInfo = await execAsync('node /home/ubuntu/scripts/get-full-status.mjs', { encoding: 'utf-8' });
                     statusMsg += localStatsInfo.stdout;
                 } catch (e: any) {
                     statusMsg += "❌ Fehler beim Abrufen lokaler Stats.\n\n";
