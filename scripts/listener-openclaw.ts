@@ -527,15 +527,15 @@ client.sendTextMessage = async (recipient: string, text: string) => {
 function cleanGeminiOutput(text: string): string {
     let result = text;
 
+    // 0. Always clean up thinking blocks FIRST, so they don't leak no matter where they are
+    result = result.replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/gi, '');
+
     // 1. If there's a <REPLY> tag, simply take everything after it.
-    const replyIndex = text.toUpperCase().indexOf('<REPLY>');
+    const replyIndex = result.toUpperCase().indexOf('<REPLY>');
     if (replyIndex !== -1) {
         // Start right after the <REPLY> tag
         const startIdx = replyIndex + '<REPLY>'.length;
-        result = text.substring(startIdx);
-    } else {
-        // Fallback: If no <REPLY> tag, we need to clean up thinking blocks
-        result = result.replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/gi, '');
+        result = result.substring(startIdx);
     }
 
     // 2. Clean up any closing tags or remaining internal tags
@@ -895,9 +895,17 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
                 }
 
                 if (!response) {
-                    await log('Warning: Cleaned response is empty. Skipping output.');
-                    await updateRequestStatus(requestId, 'completed', '');
-                    return;
+                    if (result.status !== 0) {
+                        response = `❌ Ein interner Fehler ist aufgetreten (Code ${result.status}). Bitte versuche es später noch einmal.`;
+                        if (result.stderr && (result.stderr.includes('429') || result.stderr.includes('exhausted'))) {
+                             response = `❌ Meine Kapazitäten sind derzeit leider erschöpft (Quota Limit). Bitte versuche es in ein paar Minuten noch einmal.`;
+                        }
+                        await log(`Error status ${result.status} without output. Sending error to user.`);
+                    } else {
+                        await log('Warning: Cleaned response is empty. Skipping output.');
+                        await updateRequestStatus(requestId, 'completed', '');
+                        return;
+                    }
                 }
 
                 await trackConsumption('threema', fullQuery.length, response.length);
@@ -1022,9 +1030,17 @@ async function resumeRequests() {
                     }
 
                     if (!response) {
-                        await log('Warning: (Recovery) Cleaned response is empty. Skipping output.');
-                        await updateRequestStatus(req.id, 'completed', '');
-                        return;
+                        if (result.status !== 0) {
+                            response = `❌ Ein interner Fehler ist aufgetreten (Code ${result.status}). Bitte versuche es später noch einmal.`;
+                            if (result.stderr && (result.stderr.includes('429') || result.stderr.includes('exhausted'))) {
+                                 response = `❌ Meine Kapazitäten sind derzeit leider erschöpft (Quota Limit). Bitte versuche es in ein paar Minuten noch einmal.`;
+                            }
+                            await log(`Error status ${result.status} without output. Sending error to user.`);
+                        } else {
+                            await log('Warning: (Recovery) Cleaned response is empty. Skipping output.');
+                            await updateRequestStatus(req.id, 'completed', '');
+                            return;
+                        }
                     }
 
                     await trackConsumption('threema', fullQuery.length, response.length);
