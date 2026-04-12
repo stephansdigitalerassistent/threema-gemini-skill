@@ -24,6 +24,36 @@ const { checkIsCommand, createApprovalRequest } = require('/home/ubuntu/.gemini/
 const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
 
+// --- HEALTH TRACKING ---
+let lastMessageReceivedAt = Date.now();
+let lastSelfPingSuccess = true; 
+
+async function performSelfPing(client: any, identity: any) {
+    if (!client) return;
+    
+    // Check if we need to recover before pinging
+    if (!client.isCspReady()) {
+        await log(`[HealthCheck] Client not ready (CSP not established). Skipping ping.`);
+        return;
+    }
+
+    try {
+        await log(`[HealthCheck] Performing background self-ping...`);
+        await client.sendTextMessage(identity.identity, `[HEALTH_CHECK_PING] ${new Date().toISOString()}`);
+        lastSelfPingSuccess = true;
+        await log(`[HealthCheck] Self-ping successful.`);
+    } catch (e: any) {
+        await log(`[HealthCheck] Self-ping FAILED: ${e.message}. Attempting recovery...`);
+        lastSelfPingSuccess = false;
+        
+        if (e.message.includes('WebSocket') || e.message.includes('closed') || e.message.includes('not open')) {
+            await log(`[Recovery] WebSocket issue detected. Re-connecting...`);
+            client.connect().catch(() => {});
+        }
+    }
+}
+// -----------------------
+
 const LOG_FILE = '/home/ubuntu/threema-listener.log';
 const GEMINI_TIMEOUT = 600000; // 10 minutes
 
@@ -81,8 +111,15 @@ import * as http from 'node:http';
 
 const ipcServer = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/status') {
+        const state = client.isCspReady() ? (lastSelfPingSuccess ? 'CONNECTED' : 'DEGRADED') : 'CONNECTING';
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, state: client.isCspReady() ? 'CONNECTED' : 'CONNECTING' }));
+        res.end(JSON.stringify({ 
+            success: true, 
+            state, 
+            selfPing: lastSelfPingSuccess,
+            lastActivity: new Date(lastMessageReceivedAt).toISOString(),
+            uptime: process.uptime()
+        }));
     } else if (req.method === 'POST' && req.url === '/send') {
         let body = '';
         req.on('data', chunk => body += chunk.toString());
@@ -1075,7 +1112,12 @@ client.on('close', async (code, reason) => {
     process.exit(1);
 });
 
-client.connect().catch(async err => {
+client.connect().then(() => {
+    // Start background ping every 10 minutes (to avoid spamming, but verify connection)
+    setInterval(() => performSelfPing(client, identity), 10 * 60 * 1000);
+    // Initial ping after 30 seconds
+    setTimeout(() => performSelfPing(client, identity), 30 * 1000);
+}).catch(async err => {
     await log(`FATAL: ${err.message}`);
     process.exit(1);
 });
