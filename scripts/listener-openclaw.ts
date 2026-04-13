@@ -525,7 +525,7 @@ const client = new MediatorClient({
             }
 
             if (text || mediaPath) {
-                await handleMessage(msg.senderIdentity, text, mediaPath, groupContext);
+                await handleMessage(msg.senderIdentity, text, mediaPath, groupContext, msgIdStr);
             } else {
                 let typeName = `Type ${msg.type}`;
                 let bodyInfo = "";
@@ -599,7 +599,7 @@ function cleanGeminiOutput(text: string): string {
     return result.trim();
 }
 
-async function handleMessage(senderId: string, text: string, mediaPath: string | null = null, groupContext: { creator: string, groupId: Uint8Array } | null = null) {
+async function handleMessage(senderId: string, text: string, mediaPath: string | null = null, groupContext: { creator: string, groupId: Uint8Array } | null = null, msgIdStr: string | null = null) {
     if (senderId === identity.identity) {
         return; // Ignore self
     }
@@ -612,14 +612,20 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
 
     try {
         const groupIdHex = groupContext ? Buffer.from(groupContext.groupId).toString('hex') : null;
-        await require('/home/ubuntu/db_helper.js').logMessage({
+        const logged = await require('/home/ubuntu/db_helper.js').logMessage({
             direction: 'inbound',
             channel: 'threema',
             senderId: senderId,
             senderName: senderId, // Nickname fetching is async or cached, sticking to ID for safety
             groupId: groupIdHex,
-            content: text || (mediaPath ? `[Media: ${path.basename(mediaPath)}]` : '[Unknown]')
+            content: text || (mediaPath ? `[Media: ${path.basename(mediaPath)}]` : '[Unknown]'),
+            provider_msg_id: msgIdStr
         });
+
+        if (!logged && msgIdStr) {
+            await log(`[Deduplication] Skipping already processed message ${msgIdStr}`);
+            return;
+        }
     } catch(e: any) { await log('DB Log Inbound Error: ' + e.message); }
 
     let groupName: string | undefined;
