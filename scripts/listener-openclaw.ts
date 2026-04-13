@@ -619,7 +619,8 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
             senderName: senderId, // Nickname fetching is async or cached, sticking to ID for safety
             groupId: groupIdHex,
             content: text || (mediaPath ? `[Media: ${path.basename(mediaPath)}]` : '[Unknown]'),
-            provider_msg_id: msgIdStr
+            provider_msg_id: msgIdStr,
+            status: 'processing'
         });
 
         if (!logged && msgIdStr) {
