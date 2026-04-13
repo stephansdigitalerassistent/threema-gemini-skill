@@ -111,14 +111,17 @@ import * as http from 'node:http';
 
 const ipcServer = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/status') {
-        const state = client.isCspReady() ? (lastSelfPingSuccess ? 'CONNECTED' : 'DEGRADED') : 'CONNECTING';
+        const connectedToMediator = client.isCspReady() || (client as any).ws?.readyState === 1;
+        const state = connectedToMediator ? (lastSelfPingSuccess ? 'CONNECTED' : 'DEGRADED') : 'CONNECTING';
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
             success: true, 
             state, 
             selfPing: lastSelfPingSuccess,
             lastActivity: new Date(lastMessageReceivedAt).toISOString(),
-            uptime: process.uptime()
+            uptime: process.uptime(),
+            isLeader: client.isLeader(),
+            isCspReady: client.isCspReady()
         }));
     } else if (req.method === 'POST' && req.url === '/send') {
         let body = '';
