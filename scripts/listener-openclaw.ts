@@ -293,7 +293,20 @@ const client = new MediatorClient({
     dataDir: DATA_DIR,
     nickname: process.env.THREEMA_NICKNAME,
     onEnvelope: async (envelope) => {
-        await log(`[DEBUG] onEnvelope triggered`);
+        if (!client.isCspReady()) {
+            await log(`[DEBUG] CSP not ready. Queuing envelope ${envelope.incomingMessage?.messageId.toString()}`);
+            envelopeQueue.push(envelope);
+            return;
+        }
+        await processEnvelope(envelope);
+    }
+});
+
+const envelopeQueue: any[] = [];
+
+async function processEnvelope(envelope: any) {
+    await log(`[DEBUG] processEnvelope triggered`);
+    try {
         if (envelope.incomingMessage) {
             const msg = envelope.incomingMessage;
             const msgIdStr = msg.messageId.toString();
@@ -323,6 +336,7 @@ const client = new MediatorClient({
             }
 
             // Send receipt (Seen = 2)
+            // Now we are sure client is CSP ready
             client.sendDeliveryReceipt(msg.senderIdentity, [msgIdStr], 2).catch(async err => {
                 await log(`Error sending receipt for ${msgIdStr}: ${err.message}`);
             });
@@ -546,8 +560,10 @@ const client = new MediatorClient({
         } else {
             await log(`[DEBUG] Envelope received without incomingMessage property.`);
         }
+    } catch (error: any) {
+        await log(`[ERROR] processEnvelope: ${error.message}`);
     }
-});
+}
 
 const originalSendTextMessage = client.sendTextMessage.bind(client);
 client.sendTextMessage = async (recipient: string, text: string) => {
@@ -991,6 +1007,15 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
 client.on('cspReady', async () => {
     await log('🔐 Threema CSP handshake completed. Ready.');
     
+    // Process queued envelopes
+    if (envelopeQueue.length > 0) {
+        await log(`[DEBUG] Processing ${envelopeQueue.length} queued envelopes...`);
+        while (envelopeQueue.length > 0) {
+            const env = envelopeQueue.shift();
+            await processEnvelope(env);
+        }
+    }
+
     // Heartbeat to keep connection alive (every 2 minutes)
     setInterval(async () => {
         if (client.isCspReady() && STEPHAN_THREEMA_ID) {
