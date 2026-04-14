@@ -1119,6 +1119,23 @@ client.on('cspError', async (error) => {
 
 client.on('close', async (code, reason) => {
     await log(`Connection closed: ${code} ${reason}`);
+    
+    // 1011: Server error (Mediator protocol/session issues). 
+    // Usually fixed by re-generating a device ID (Slot State: NEW).
+    if (code === 1011) {
+        try {
+            await log(`[Self-Healing] Detected 1011 Server error. Resetting deviceId for next connection...`);
+            const currentIdentity = JSON.parse(await fsPromises.readFile(identityPath, 'utf-8'));
+            if (currentIdentity.deviceId) {
+                delete currentIdentity.deviceId;
+                await fsPromises.writeFile(identityPath, JSON.stringify(currentIdentity, null, 2));
+                await log(`[Self-Healing] Stale deviceId removed successfully.`);
+            }
+        } catch (e: any) {
+            await log(`[Self-Healing] Failed to reset identity: ${e.message}`);
+        }
+    }
+    
     process.exit(1);
 });
 
