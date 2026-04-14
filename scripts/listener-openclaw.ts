@@ -15,11 +15,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = path.join(__dirname, '..');
 dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
 
-// Load history helpers (CommonJS)
-const { addMessage, formatHistoryForPrompt, trackConsumption } = require('/home/ubuntu/.gemini/skills/common/history');
-const { runGeminiAsync, runSmartGemini } = require('/home/ubuntu/.gemini/skills/common/gemini-manager');
-const { addPendingRequest, updateRequestStatus, getIncompleteRequests, enqueueTask: dbEnqueueTask, setSessionContext, getSessionContext } = require('/home/ubuntu/db_helper.js');
-const { checkIsCommand, createApprovalRequest } = require('/home/ubuntu/.gemini/skills/common/approval-manager');
+// Load history helpers (ESM)
+import {  addMessage, formatHistoryForPrompt, trackConsumption, getRemoteQuota, getConsumption  } from '/home/ubuntu/src/core/history.js';
+import { runGeminiAsync, runSmartGemini } from '/home/ubuntu/.gemini/skills/common/gemini-manager.cjs';
+import { addPendingRequest, updateRequestStatus, getIncompleteRequests, enqueueTask as dbEnqueueTask, setSessionContext, getSessionContext } from '/home/ubuntu/src/db/db_helper.js';
+import { checkIsCommand, createApprovalRequest } from '/home/ubuntu/.gemini/skills/common/approval-manager.cjs';
 
 const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
@@ -440,7 +440,7 @@ async function processEnvelope(envelope: any) {
                     
                     // --- NEUES FEATURE: TRANSKRIPTION ---
                     if (msg.type === 4 || msg.type === 6 || msg.type === 23 || msg.type === 70) {
-                        const { transcribeAudio } = require('/home/ubuntu/scripts/transcribe');
+                        const { transcribeAudio } = require('/home/ubuntu/scripts/transcribe.cjs');
                         let audioToTranscribe: string | null = null;
                         
                         if (msg.type === 4) {
@@ -568,7 +568,7 @@ async function processEnvelope(envelope: any) {
 const originalSendTextMessage = client.sendTextMessage.bind(client);
 client.sendTextMessage = async (recipient: string, text: string) => {
     try {
-        await require('/home/ubuntu/db_helper.js').logMessage({
+        (await import('/home/ubuntu/src/db/db_helper.js')).logMessage({
             direction: 'outbound',
             channel: 'threema',
             senderId: 'assistant',
@@ -628,7 +628,7 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
 
     try {
         const groupIdHex = groupContext ? Buffer.from(groupContext.groupId).toString('hex') : null;
-        const logged = await require('/home/ubuntu/db_helper.js').logMessage({
+        const logged = (await import('/home/ubuntu/src/db/db_helper.js')).logMessage({
             direction: 'inbound',
             channel: 'threema',
             senderId: senderId,
@@ -715,7 +715,7 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
                 const stdout = resultGemini.stdout;
                 const result = JSON.parse(stdout.substring(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1));
                 
-                const { addReminder } = require('/home/ubuntu/db_helper.js');
+                const { addReminder } = await import('/home/ubuntu/src/db/db_helper.js');
                 await addReminder(result.time, result.message);
                 
                 const dateStr = new Date(result.time).toLocaleString('de-CH', { timeZone: 'Europe/Zurich' });
@@ -743,8 +743,7 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
                 }
 
                 // Remote Quota Stats
-                const { getRemoteQuota } = require('/home/ubuntu/.gemini/skills/common/history');
-                const remoteQuota = await getRemoteQuota();
+const remoteQuota = await getRemoteQuota();
                 if (remoteQuota && Array.isArray(remoteQuota)) {
                     statusMsg += `\n*🤖 Model Quotas*:\n`;
                     statusMsg += `\`Model                Usage    Resets in\`\n`;
@@ -796,8 +795,9 @@ Wenn keine Zeit gefunden wird, nimm in 1 Stunde an.`;
                     statusMsg += `\n⚠️ *Model Quotas*: Keine Daten verfügbar.\n`;
                 }
 
-                const { getConsumption } = require('/home/ubuntu/.gemini/skills/common/history');
+
                 const consumption = await getConsumption();
+
                 const calcCost = (inChars: number, outChars: number) => {
                      return ((inChars / 1000000) * 0.075) + ((outChars / 1000000) * 0.30);
                 };
