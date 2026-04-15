@@ -17,9 +17,9 @@ dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
 
 // Load history helpers (ESM)
 import {  addMessage, formatHistoryForPrompt, trackConsumption, getRemoteQuota, getConsumption  } from '/home/ubuntu/src/core/history.js';
-import { runGeminiAsync, runSmartGemini } from '/home/ubuntu/.gemini/skills/common/gemini-manager.cjs';
+import { runGeminiAsync, runSmartGemini } from '/home/ubuntu/.gemini/skills/common/gemini-manager.js';
 import { addPendingRequest, updateRequestStatus, getIncompleteRequests, enqueueTask as dbEnqueueTask, setSessionContext, getSessionContext } from '/home/ubuntu/src/db/db_helper.js';
-import { checkIsCommand, createApprovalRequest } from '/home/ubuntu/.gemini/skills/common/approval-manager.cjs';
+import { checkIsCommand, createApprovalRequest } from '/home/ubuntu/.gemini/skills/common/approval-manager.js';
 
 const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
@@ -335,11 +335,12 @@ async function processEnvelope(envelope: any) {
                 await updateContact(msg.senderIdentity, { nickname: msg.nickname });
             }
 
-            // Send receipt (Seen = 2)
-            // Now we are sure client is CSP ready
-            client.sendDeliveryReceipt(msg.senderIdentity, [msgIdStr], 2).catch(async err => {
-                await log(`Error sending receipt for ${msgIdStr}: ${err.message}`);
-            });
+            // Send read receipt (Seen = 3) for user messages
+            if (![128, 129, 130, 131].includes(msg.type)) {
+                client.sendDeliveryReceipt(msg.senderIdentity, [msgIdStr], 3).catch(async err => {
+                    await log(`Error sending read receipt for ${msgIdStr}: ${err.message}`);
+                });
+            }
 
             let text = "";
             let mediaPath: string | null = null;
@@ -440,7 +441,7 @@ async function processEnvelope(envelope: any) {
                     
                     // --- NEUES FEATURE: TRANSKRIPTION ---
                     if (msg.type === 4 || msg.type === 6 || msg.type === 23 || msg.type === 70) {
-                        const { transcribeAudio } = require('/home/ubuntu/scripts/transcribe.cjs');
+                        const { transcribeAudio } = await import('/home/ubuntu/scripts/transcribe.cjs');
                         let audioToTranscribe: string | null = null;
                         
                         if (msg.type === 4) {
@@ -571,9 +572,9 @@ client.sendTextMessage = async (recipient: string, text: string) => {
         (await import('/home/ubuntu/src/db/db_helper.js')).logMessage({
             direction: 'outbound',
             channel: 'threema',
-            senderId: 'assistant',
-            senderName: 'Assistant',
-            groupId: null, // Threema openclaw group sends might not be just plain sendTextMessage, but let's leave it null for now
+            sender_id: 'assistant',
+            sender_name: 'Assistant',
+            group_id: null, // Threema openclaw group sends might not be just plain sendTextMessage, but let's leave it null for now
             content: text || '[Non-Text]'
         });
     } catch(e: any) { await log('DB Log Outbound Error: ' + e.message); }
@@ -628,12 +629,12 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
 
     try {
         const groupIdHex = groupContext ? Buffer.from(groupContext.groupId).toString('hex') : null;
-        const logged = (await import('/home/ubuntu/src/db/db_helper.js')).logMessage({
+        const logged = await (await import('/home/ubuntu/src/db/db_helper.js')).logMessage({
             direction: 'inbound',
             channel: 'threema',
-            senderId: senderId,
-            senderName: senderId, // Nickname fetching is async or cached, sticking to ID for safety
-            groupId: groupIdHex,
+            sender_id: senderId,
+            sender_name: senderId, // Nickname fetching is async or cached, sticking to ID for safety
+            group_id: groupIdHex,
             content: text || (mediaPath ? `[Media: ${path.basename(mediaPath)}]` : '[Unknown]'),
             provider_msg_id: msgIdStr,
             status: 'processing'
