@@ -335,15 +335,6 @@ async function processEnvelope(envelope: any) {
                 await updateContact(msg.senderIdentity, { nickname: msg.nickname });
             }
 
-            // Send read receipt (Seen = 3) for user messages
-            if (![128, 129, 130, 131].includes(msg.type)) {
-                client.sendDeliveryReceipt(msg.senderIdentity, [msgIdStr], 3).catch(async err => {
-                    await log(`Error sending read receipt for ${msgIdStr}: ${err.message}`);
-                });
-            }
-
-            let text = "";
-            let mediaPath: string | null = null;
             let groupContext: { creator: string, groupId: Uint8Array } | null = null;
 
             if (msg.type === 1) { // Text
@@ -644,6 +635,13 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
             await log(`[Deduplication] Skipping already processed message ${msgIdStr}`);
             return;
         }
+
+        // --- SUCCESS: Message is in DB. Now we can acknowledge to Threema ---
+        if (msgIdStr && !text.includes('[HEALTH_CHECK_PING]')) {
+            client.sendDeliveryReceipt(senderId, [msgIdStr], 3).catch(err => {
+                log(`Error sending late read receipt for ${msgIdStr}: ${err.message}`);
+            });
+        }
     } catch(e: any) { await log('DB Log Inbound Error: ' + e.message); }
 
     let groupName: string | undefined;
@@ -922,6 +920,9 @@ const remoteQuota = await getRemoteQuota();
                 const result = await runSmartGemini({
                     message: fullQuery,
                     userName,
+                    channel: 'threema',
+                    senderId: senderId,
+                    groupId: groupIdHex,
                     isTrustedAdmin,
                     options: {
                         timeout: GEMINI_TIMEOUT,
@@ -933,6 +934,21 @@ const remoteQuota = await getRemoteQuota();
                         }
                     }
                 });
+
+                if (result.persistent) {
+                    await log(`[GeminiManager] Request enqueued persistently for ${userName}.`);
+                    const persistentMsg = cleanGeminiOutput(result.stdout || "");
+                    if (groupContext) {
+                        const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
+                        const group = observedGroups.get(groupIdHex);
+                        const members = Array.from(group?.members || [senderId]).filter(id => id !== identity.identity);
+                        await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, persistentMsg);
+                    } else {
+                        await client.sendTextMessage(senderId, persistentMsg);
+                    }
+                    await updateRequestStatus(requestId, 'processing', 'ENQUEUED_IN_DB');
+                    return;
+                }
                 
                 if (result.routingAction === 'developer_plan') {
                     await setSessionContext(senderId, 'developer', {
