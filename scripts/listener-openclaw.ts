@@ -924,6 +924,7 @@ const remoteQuota = await getRemoteQuota();
                     senderId: senderId,
                     groupId: groupIdHex,
                     isTrustedAdmin,
+                    mediaPath: mediaPath, // PASS MEDIA TO GEMINI
                     options: {
                         timeout: GEMINI_TIMEOUT,
                         env: {
@@ -1093,6 +1094,7 @@ async function resumeRequests() {
                         message: fullQuery,
                         userName,
                         isTrustedAdmin,
+                        mediaPath: mediaPath, // PASS MEDIA TO GEMINI
                         options: {
                             timeout: GEMINI_TIMEOUT,
                             env: {
