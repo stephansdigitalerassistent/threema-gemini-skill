@@ -611,6 +611,10 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
     if (senderId === identity.identity) {
         return; // Ignore self
     }
+
+    if (text && text.includes('[HEALTH_CHECK_PING]')) {
+        return; // Ignore internal health pings
+    }
     
     if (senderId === 'ECHOECHO') {
         const contextStr = groupContext ? `in group ${groupContext.creator}-${Buffer.from(groupContext.groupId).toString('hex')}` : 'directly';
@@ -1184,10 +1188,10 @@ client.on('close', async (code, reason) => {
 });
 
 client.connect().then(() => {
-    // Start background ping every 10 minutes (to avoid spamming, but verify connection)
-    setInterval(() => performSelfPing(client, identity), 10 * 60 * 1000);
-    // Initial ping after 30 seconds
-    setTimeout(() => performSelfPing(client, identity), 30 * 1000);
+    // Start background ping every 15 minutes (to avoid spamming, but verify connection)
+    setInterval(() => performSelfPing(client, identity), 15 * 60 * 1000);
+    // Initial ping after 60 seconds
+    setTimeout(() => performSelfPing(client, identity), 60 * 1000);
 }).catch(async err => {
     await log(`FATAL: ${err.message}`);
     process.exit(1);
