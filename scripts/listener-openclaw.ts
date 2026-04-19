@@ -1172,19 +1172,22 @@ client.on('close', async (code, reason) => {
         }
     }
     
-    async function start() {
-        await loadGroups();
-        await loadContacts();
+    process.exit(1);
+});
 
-        client.connect().then(() => {
-            // Start background ping every 15 minutes (to avoid spamming, but verify connection)
-            setInterval(() => performSelfPing(client, identity), 15 * 60 * 1000);
-            // Initial ping after 60 seconds
-            setTimeout(() => performSelfPing(client, identity), 60 * 1000);
-        }).catch(async err => {
-            await log(`FATAL: ${err.message}`);
-            process.exit(1);
-        });
-    }
+async function start() {
+    await loadGroups();
+    await loadContacts();
 
-    start();
+    client.connect().then(() => {
+        // Start background ping every 15 minutes (to avoid spamming, but verify connection)
+        setInterval(() => performSelfPing(client, identity), 15 * 60 * 1000);
+        // Initial ping after 60 seconds
+        setTimeout(() => performSelfPing(client, identity), 60 * 1000);
+    }).catch(async err => {
+        await log(`FATAL: ${err.message}`);
+        process.exit(1);
+    });
+}
+
+start();
