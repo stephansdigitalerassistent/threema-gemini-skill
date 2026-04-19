@@ -19,6 +19,7 @@ dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
 import {  addMessage, formatHistoryForPrompt, trackConsumption, getRemoteQuota, getConsumption  } from '/home/ubuntu/src/core/history.js';
 import { runGeminiAsync, runSmartGemini } from '/home/ubuntu/.gemini/skills/common/gemini-manager.js';
 import { addPendingRequest, updateRequestStatus, getIncompleteRequests, enqueueTask as dbEnqueueTask, setSessionContext, getSessionContext } from '/home/ubuntu/src/db/db_helper.js';
+import { upsertContact, upsertGroup, getAllContacts, getAllGroups } from '/home/ubuntu/src/db/contacts.js';
 import { checkIsCommand, createApprovalRequest } from '/home/ubuntu/.gemini/skills/common/approval-manager.js';
 
 const DATA_DIR = path.join(SKILL_ROOT, 'data');
@@ -191,83 +192,63 @@ const ipcServer = http.createServer((req, res) => {
 });
 ipcServer.listen(3003, '127.0.0.1', () => log('IPC Server listening on port 3003'));
 
-function loadGroups() {
+async function loadGroups() {
     try {
-        if (fs.existsSync(GROUPS_FILE)) {
-            const data = JSON.parse(fs.readFileSync(GROUPS_FILE, 'utf-8'));
-            for (let [key, val] of Object.entries(data)) {
-                let groupId = key;
-                if (key.includes('-')) {
-                    groupId = key.split('-')[1];
-                }
-                
-                if (Array.isArray(val)) {
-                    // Legacy format: [member1, member2, ...]
-                    const cleanMembers = val.filter(m => m && m.length === 8 && m !== 'null' && m !== 'ECHOECHO');
-                    observedGroups.set(groupId, { members: new Set(cleanMembers) });
-                } else if (typeof val === 'object' && val !== null) {
-                    // New format: { name: string, members: string[] }
-                    const groupData = val as any;
-                    const cleanMembers = (groupData.members || []).filter((m: any) => m && m.length === 8 && m !== 'null' && m !== 'ECHOECHO');
-                    observedGroups.set(groupId, { 
-                        name: groupData.name, 
-                        members: new Set(cleanMembers) 
-                    });
-                }
-            }
-            log(`Loaded ${observedGroups.size} groups from disk.`);
+        const groups = await getAllGroups('threema');
+        for (const g of groups) {
+            observedGroups.set(g.external_id, {
+                name: g.name,
+                members: new Set(g.members || [])
+            });
         }
+        await log(`Loaded ${observedGroups.size} groups from database.`);
     } catch (e: any) {
-        log(`Error loading groups: ${e.message}`);
+        await log(`Error loading groups from DB: ${e.message}`);
     }
 }
 
 async function saveGroups() {
     try {
-        const data: Record<string, { name?: string, members: string[] }> = {};
-        observedGroups.forEach((val, key) => {
-            data[key] = {
+        for (const [id, val] of observedGroups.entries()) {
+            await upsertGroup({
+                externalId: id,
+                channel: 'threema',
                 name: val.name,
                 members: Array.from(val.members)
-            };
-        });
-        await fsPromises.writeFile(GROUPS_FILE, JSON.stringify(data, null, 2));
+            });
+        }
     } catch (e: any) {
-        await log(`Error saving groups: ${e.message}`);
+        await log(`Error saving groups to DB: ${e.message}`);
     }
 }
 
-function loadContacts() {
+async function loadContacts() {
     try {
-        if (fs.existsSync(CONTACTS_FILE)) {
-            const data = JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf-8'));
-            if (Array.isArray(data)) {
-                data.forEach(c => {
-                    if (c.identity) {
-                        observedContacts.set(c.identity, {
-                            firstName: c.firstName,
-                            lastName: c.lastName,
-                            nickname: c.nickname
-                        });
-                    }
-                });
-            }
-            log(`Loaded ${observedContacts.size} contacts from disk.`);
+        const contacts = await getAllContacts('threema');
+        for (const c of contacts) {
+            observedContacts.set(c.identity, {
+                firstName: c.first_name,
+                lastName: c.last_name,
+                nickname: c.nickname
+            });
         }
+        await log(`Loaded ${observedContacts.size} contacts from database.`);
     } catch (e: any) {
-        log(`Error loading contacts: ${e.message}`);
+        await log(`Error loading contacts from DB: ${e.message}`);
     }
 }
 
 async function saveContacts() {
     try {
-        const data = Array.from(observedContacts.entries()).map(([identity, val]) => ({
-            identity,
-            ...val
-        }));
-        await fsPromises.writeFile(CONTACTS_FILE, JSON.stringify(data, null, 2));
+        for (const [identity, val] of observedContacts.entries()) {
+            await upsertContact({
+                identity,
+                channel: 'threema',
+                ...val
+            });
+        }
     } catch (e: any) {
-        await log(`Error saving contacts: ${e.message}`);
+        await log(`Error saving contacts to DB: ${e.message}`);
     }
 }
 
@@ -284,9 +265,6 @@ async function updateContact(identity: string, data: { firstName?: string, lastN
         await log(`Updated contact info for ${identity}: ${JSON.stringify(existing)}`);
     }
 }
-
-loadGroups();
-loadContacts();
 
 const client = new MediatorClient({
     identity,
@@ -335,6 +313,8 @@ async function processEnvelope(envelope: any) {
                 await updateContact(msg.senderIdentity, { nickname: msg.nickname });
             }
 
+            let text: string = "";
+            let mediaPath: string | null = null;
             let groupContext: { creator: string, groupId: Uint8Array } | null = null;
 
             if (msg.type === 1) { // Text
@@ -1192,15 +1172,19 @@ client.on('close', async (code, reason) => {
         }
     }
     
-    process.exit(1);
-});
+    async function start() {
+        await loadGroups();
+        await loadContacts();
 
-client.connect().then(() => {
-    // Start background ping every 15 minutes (to avoid spamming, but verify connection)
-    setInterval(() => performSelfPing(client, identity), 15 * 60 * 1000);
-    // Initial ping after 60 seconds
-    setTimeout(() => performSelfPing(client, identity), 60 * 1000);
-}).catch(async err => {
-    await log(`FATAL: ${err.message}`);
-    process.exit(1);
-});
+        client.connect().then(() => {
+            // Start background ping every 15 minutes (to avoid spamming, but verify connection)
+            setInterval(() => performSelfPing(client, identity), 15 * 60 * 1000);
+            // Initial ping after 60 seconds
+            setTimeout(() => performSelfPing(client, identity), 60 * 1000);
+        }).catch(async err => {
+            await log(`FATAL: ${err.message}`);
+            process.exit(1);
+        });
+    }
+
+    start();
