@@ -619,6 +619,11 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
     if (senderId === 'ECHOECHO') {
         const contextStr = groupContext ? `in group ${groupContext.creator}-${Buffer.from(groupContext.groupId).toString('hex')}` : 'directly';
         await log(`Ignored message from ECHOECHO ${contextStr} to prevent loop: ${text}`);
+        if (msgIdStr) {
+            client.sendDeliveryReceipt(senderId, [msgIdStr], 3).catch(err => {
+                log(`Error sending read receipt for ECHOECHO ${msgIdStr}: ${err.message}`);
+            });
+        }
         return;
     }
 
@@ -637,6 +642,9 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
 
         if (!logged && msgIdStr) {
             await log(`[Deduplication] Skipping already processed message ${msgIdStr}`);
+            client.sendDeliveryReceipt(senderId, [msgIdStr], 3).catch(err => {
+                log(`Error sending late read receipt for duplicate ${msgIdStr}: ${err.message}`);
+            });
             return;
         }
 
