@@ -111,10 +111,14 @@ const observedContacts = new Map<string, { firstName?: string, lastName?: string
 import * as http from 'node:http';
 
 const ipcServer = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/status') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && req.url === '/status') {
         const connectedToMediator = client.isCspReady() || (client as any).ws?.readyState === 1;
         const state = connectedToMediator ? (lastSelfPingSuccess ? 'CONNECTED' : 'DEGRADED') : 'CONNECTING';
         res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (req.method === 'HEAD') {
+            res.end();
+            return;
+        }
         res.end(JSON.stringify({ 
             success: true, 
             state, 
