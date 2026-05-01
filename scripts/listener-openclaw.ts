@@ -16,11 +16,14 @@ const SKILL_ROOT = path.join(__dirname, '..');
 dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
 
 // Load history helpers (ESM)
-import {  addMessage, formatHistoryForPrompt, trackConsumption, getRemoteQuota, getConsumption  } from '/home/ubuntu/src/core/history.js';
-import { runGeminiAsync, runSmartGemini } from '/home/ubuntu/.gemini/skills/common/gemini-manager.js';
-import { addPendingRequest, updateRequestStatus, getIncompleteRequests, enqueueTask as dbEnqueueTask, setSessionContext, getSessionContext } from '/home/ubuntu/src/db/db_helper.js';
-import { upsertContact, upsertGroup, getAllContacts, getAllGroups } from '/home/ubuntu/src/db/contacts.js';
-import { checkIsCommand, createApprovalRequest } from '/home/ubuntu/.gemini/skills/common/approval-manager.js';
+import {  addMessage, formatHistoryForPrompt, trackConsumption, getRemoteQuota, getConsumption  } from '../../src/core/history.js';
+import { runGeminiAsync, runSmartGemini } from '../../src/common/gemini-manager.mjs';
+import { addPendingRequest, updateRequestStatus, getIncompleteRequests, enqueueTask as dbEnqueueTask, setSessionContext, getSessionContext } from '../../src/db/db_helper.js';
+import { upsertContact, upsertGroup, getAllContacts, getAllGroups } from '../../src/db/contacts.js';
+import { checkIsCommand, createApprovalRequest } from '../../src/common/approval-manager.mjs';
+
+import { AgentMessage, AGENT_TYPES, MESSAGE_TYPES } from '../../src/common/agent-protocol.mjs';
+import crypto from 'node:crypto';
 
 const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
@@ -596,12 +599,14 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         return; // Ignore self
     }
 
+    const groupIdHex = groupContext ? Buffer.from(groupContext.groupId).toString('hex') : null;
+
     if (text && text.includes('[HEALTH_CHECK_PING]')) {
         return; // Ignore internal health pings
     }
     
     if (senderId === 'ECHOECHO') {
-        const contextStr = groupContext ? `in group ${groupContext.creator}-${Buffer.from(groupContext.groupId).toString('hex')}` : 'directly';
+        const contextStr = groupContext ? `in group ${groupContext.creator}-${groupIdHex}` : 'directly';
         await log(`Ignored message from ECHOECHO ${contextStr} to prevent loop: ${text}`);
         if (msgIdStr) {
             client.sendDeliveryReceipt(senderId, [msgIdStr], 3).catch(err => {
@@ -641,8 +646,7 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
     } catch(e: any) { await log('DB Log Inbound Error: ' + e.message); }
 
     let groupName: string | undefined;
-    if (groupContext) {
-        const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
+    if (groupContext && groupIdHex) {
         const group = observedGroups.get(groupIdHex) || { members: new Set(STEPHAN_THREEMA_ID ? [STEPHAN_THREEMA_ID] : []) };
         const oldSize = group.members.size;
         group.members.add(senderId);
@@ -908,12 +912,14 @@ const remoteQuota = await getRemoteQuota();
         }
         // ----------------------------------------
 
+        const correlationId = crypto.randomUUID();
+
         enqueueTask(async () => {
             try {
                 await updateRequestStatus(requestId, 'processing');
-                await log(`Asking Cognitive Proxy (Smart) for response to ${userName}...`);
+                await log(`[${correlationId}] Asking Cognitive Proxy (Smart) for response to ${userName}...`);
 
-                const result = await runSmartGemini({
+                const agentMsg = await runSmartGemini({
                     message: fullQuery,
                     userName,
                     channel: 'threema',
@@ -921,6 +927,7 @@ const remoteQuota = await getRemoteQuota();
                     groupId: groupIdHex,
                     isTrustedAdmin,
                     mediaPath: mediaPath, // PASS MEDIA TO GEMINI
+                    correlationId,
                     options: {
                         timeout: GEMINI_TIMEOUT,
                         env: {
@@ -932,8 +939,10 @@ const remoteQuota = await getRemoteQuota();
                     }
                 });
 
+                const result = agentMsg.payload;
+
                 if (result.persistent) {
-                    await log(`[GeminiManager] Request enqueued persistently for ${userName}.`);
+                    await log(`[GeminiManager] [${correlationId}] Request enqueued persistently for ${userName}.`);
                     const persistentMsg = cleanGeminiOutput(result.stdout || "");
                     if (groupContext) {
                         const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
@@ -951,7 +960,8 @@ const remoteQuota = await getRemoteQuota();
                     await setSessionContext(senderId, 'developer', {
                         originalQuery: text,
                         plan: result.stdout,
-                        files: result.files
+                        files: result.files,
+                        correlationId // Ensure ID survives session
                     });
                 }
 
@@ -972,14 +982,14 @@ const remoteQuota = await getRemoteQuota();
                 }
 
                 if (!response) {
-                    if (result.status !== 0) {
-                        response = `❌ Ein interner Fehler ist aufgetreten (Code ${result.status}). Bitte versuche es später noch einmal.`;
+                    if (agentMsg.type === MESSAGE_TYPES.ERROR || result.status !== 0) {
+                        response = `❌ Ein interner Fehler ist aufgetreten (ID: ${correlationId}). Bitte versuche es später noch einmal.`;
                         if (result.stderr && (result.stderr.includes('429') || result.stderr.includes('exhausted'))) {
                              response = `❌ Meine Kapazitäten sind derzeit leider erschöpft (Quota Limit). Bitte versuche es in ein paar Minuten noch einmal.`;
                         }
-                        await log(`Error status ${result.status} without output. Sending error to user.`);
+                        await log(`[${correlationId}] Error status ${result.status} without output. Sending error to user.`);
                     } else {
-                        await log('Warning: Cleaned response is empty. Skipping output.');
+                        await log(`[${correlationId}] Warning: Cleaned response is empty. Skipping output.`);
                         await updateRequestStatus(requestId, 'completed', '');
                         return;
                     }
@@ -989,8 +999,7 @@ const remoteQuota = await getRemoteQuota();
                 await addMessage(senderId, 'threema', 'Assistant', response);
 
                 // Send response
-                if (groupContext) {
-                    const groupIdHex = Buffer.from(groupContext.groupId).toString('hex');
+                if (groupContext && groupIdHex) {
                     const group = observedGroups.get(groupIdHex);
                     const members = Array.from(group?.members || [senderId]).filter(id => id !== identity.identity);
                     await client.sendGroupTextMessage(groupContext.creator, groupContext.groupId, members, response);
@@ -1086,9 +1095,12 @@ async function resumeRequests() {
                     await updateRequestStatus(req.id, 'processing');
                     await log(`Asking Cognitive Proxy (Recovery Smart) for response to ${userName}...`);
 
-                    const result = await runSmartGemini({
+                    const agentMsg = await runSmartGemini({
                         message: fullQuery,
                         userName,
+                        channel: 'threema',
+                        senderId: senderId,
+                        groupId: groupContextObj?.groupIdHex || null,
                         isTrustedAdmin,
                         mediaPath: mediaPath, // PASS MEDIA TO GEMINI
                         options: {
@@ -1101,6 +1113,8 @@ async function resumeRequests() {
                             }
                         }
                     });
+
+                    const result = agentMsg.payload;
                     
                     let response = cleanGeminiOutput(result.stdout || "");
 
