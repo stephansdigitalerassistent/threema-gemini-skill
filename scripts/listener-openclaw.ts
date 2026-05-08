@@ -138,6 +138,8 @@ const ipcServer = http.createServer((req, res) => {
             try {
                 const data = JSON.parse(body);
                 if (data.to && data.message && client) {
+                    const kind = data.to.includes('-') ? 'group' : 'direct';
+                    log(`[IPC] /send → ${data.to} (${kind}, ${data.message.length} chars)`);
                     if (data.to.includes('-')) {
                         // Assume it's a group creator-groupId
                         const [creator, groupIdHex] = data.to.split('-');
@@ -148,13 +150,16 @@ const ipcServer = http.createServer((req, res) => {
                     } else {
                         await client.sendTextMessage(data.to, data.message);
                     }
+                    log(`[IPC] /send dispatched OK → ${data.to}`);
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ success: true }));
                 } else {
+                    log(`[IPC] /send rejected: missing fields or client not ready (to=${data?.to}, hasMessage=${!!data?.message}, hasClient=${!!client})`);
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ success: false, error: 'Missing to or message fields or client not ready' }));
                 }
             } catch (e: any) {
+                log(`[IPC] /send error: ${e.message}`);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: false, error: e.message }));
             }
