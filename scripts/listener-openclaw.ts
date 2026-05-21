@@ -17,7 +17,7 @@ dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
 
 // Load history helpers (ESM)
 import {  addMessage, formatHistoryForPrompt, trackConsumption, getRemoteQuota, getConsumption  } from '../../src/core/history.js';
-import { runGeminiAsync, runSmartGemini } from '../../src/common/gemini-manager.mjs';
+import { runGeminiAsync, runSmartGemini } from '../../src/common/gemini-client.mjs';
 import { addPendingRequest, updateRequestStatus, getIncompleteRequests, enqueueTask as dbEnqueueTask, setSessionContext, getSessionContext } from '../../src/db/db_helper.js';
 import { upsertContact, upsertGroup, getAllContacts, getAllGroups } from '../../src/db/contacts.js';
 import { checkIsCommand, createApprovalRequest } from '../../src/common/approval-manager.mjs';
