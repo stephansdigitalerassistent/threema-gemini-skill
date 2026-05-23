@@ -833,6 +833,89 @@ const remoteQuota = await getRemoteQuota();
         return;
     }
 
+    if (text.trim().startsWith('/evolution') && senderId === STEPHAN_THREEMA_ID) {
+        const parts = text.trim().split(/\s+/);
+        const subCommand = parts[1]?.toLowerCase();
+        
+        enqueueTask(async () => {
+            try {
+                const { query, addQuotaTask } = await import('/home/ubuntu/src/db/db_helper.js');
+                
+                if (subCommand === 'status' || !subCommand) {
+                    const findings = await query(
+                        "SELECT id, component, kind, impact_level, description FROM evolution_findings WHERE state = 'pending' ORDER BY timestamp DESC LIMIT 10"
+                    );
+                    if (findings.length === 0) {
+                        await client.sendTextMessage(senderId, "🧠 *Evolution Status*:\nKeine ausstehenden Findings zur Kalibrierung.");
+                        return;
+                    }
+                    let msg = "🧠 *Ausstehende Evolution Findings*:\n\n";
+                    findings.forEach((f: any) => {
+                        msg += `*ID #${f.id}* [${f.component}] (${f.kind} - ${f.impact_level})\n`;
+                        msg += `Description: ${f.description}\n`;
+                        msg += `Freigabe: \`/evolution approve ${f.id}\` oder ablehnen: \`/evolution reject ${f.id} <grund>\`\n\n`;
+                    });
+                    await client.sendTextMessage(senderId, msg);
+                } else if (subCommand === 'approve') {
+                    const id = parseInt(parts[2], 10);
+                    if (isNaN(id)) {
+                        await client.sendTextMessage(senderId, "❌ Bitte gib eine gültige ID an: `/evolution approve <id>`");
+                        return;
+                    }
+                    const rows = await query("SELECT * FROM evolution_findings WHERE id = $1", [id]);
+                    if (rows.length === 0) {
+                        await client.sendTextMessage(senderId, `❌ Finding #${id} nicht gefunden.`);
+                        return;
+                    }
+                    const finding = rows[0];
+                    if (finding.state !== 'pending') {
+                        await client.sendTextMessage(senderId, `❌ Finding #${id} hat bereits den Status: ${finding.state}`);
+                        return;
+                    }
+                    
+                    // Mark as approved
+                    await query("UPDATE evolution_findings SET state = 'approved' WHERE id = $1", [id]);
+                    
+                    // Create task in burn queue
+                    const targetDir = finding.component === 'burn-worker' || finding.component === 'assistant-core' || finding.component === 'evolution-critic'
+                        ? '/home/ubuntu'
+                        : `/home/ubuntu/${finding.component}`;
+                        
+                    const taskDesc = finding.proposed_action || finding.description;
+                    const kind = finding.kind === 'bug' ? 'impl' : (finding.kind === 'missing-test' ? 'test' : 'refactor');
+                    
+                    await addQuotaTask(targetDir, taskDesc, 'pro', kind, 100);
+                    
+                    await client.sendTextMessage(senderId, `✅ Finding #${id} freigegeben und als Task enqueued in die Quota-Burn-Queue (Model: pro, Kind: ${kind}, Ziel: ${targetDir}).`);
+                } else if (subCommand === 'reject') {
+                    const id = parseInt(parts[2], 10);
+                    const reason = parts.slice(3).join(' ').trim();
+                    if (isNaN(id)) {
+                        await client.sendTextMessage(senderId, "❌ Bitte gib eine gültige ID an: `/evolution reject <id> <grund>`");
+                        return;
+                    }
+                    if (!reason) {
+                        await client.sendTextMessage(senderId, "❌ Bitte gib einen Grund an: `/evolution reject <id> <reason>`");
+                        return;
+                    }
+                    const rows = await query("SELECT 1 FROM evolution_findings WHERE id = $1", [id]);
+                    if (rows.length === 0) {
+                        await client.sendTextMessage(senderId, `❌ Finding #${id} nicht gefunden.`);
+                        return;
+                    }
+                    await query("UPDATE evolution_findings SET state = 'rejected', calibration_notes = $2 WHERE id = $1", [id, reason]);
+                    await client.sendTextMessage(senderId, `❌ Finding #${id} abgelehnt (Grund: ${reason}).`);
+                } else {
+                    await client.sendTextMessage(senderId, "❌ Unbekannter Befehl. Erlaubt: `/evolution status`, `/evolution approve <id>`, `/evolution reject <id> <reason>`");
+                }
+            } catch (e: any) {
+                await log(`Failed to process evolution command: ${e.message}`);
+                await client.sendTextMessage(senderId, `❌ Fehler bei /evolution: ${e.message}`);
+            }
+        });
+        return;
+    }
+
     try {
         let chatContext = groupContext ? `GROUP_CHAT (Name: ${groupName || "Unknown"})` : 'DIRECT_MESSAGE';
 
