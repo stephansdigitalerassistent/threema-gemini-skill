@@ -1,3 +1,11 @@
+/**
+ * @file listener-openclaw.ts
+ * @description Serves as a bridge between the 'threema-openclaw' MediatorClient and the Gemini AI.
+ * It listens to and processes incoming Threema messages (both direct and group), routes relevant
+ * communication to Gemini AI for intelligent replies, forwards unauthorized messages to Telegram,
+ * supports voice message transcription, and implements self-healing network connectivity checks.
+ */
+
 import { SKILL_ROOT } from './load-env.js';
 import { MediatorClient } from 'threema-openclaw/src/mediator-client.js';
 import { resolveThreemaDataDir, resolveThreemaIdentityPath } from 'threema-openclaw/src/runtime-paths.js';
@@ -25,6 +33,17 @@ process.env.THREEMA_DATA_DIR = DATA_DIR;
 let lastMessageReceivedAt = Date.now();
 let lastSelfPingSuccess = true; 
 
+/**
+ * Performs a background self-ping to verify the connection health of the MediatorClient.
+ * 
+ * If the connection is not ready (i.e. CSP handshake is not established), the ping is skipped.
+ * On failure, the health state is marked as degraded (`lastSelfPingSuccess = false`), and it
+ * attempts connection recovery if a WebSocket-related error is detected.
+ * 
+ * @param {any} client - The MediatorClient instance used to send the message.
+ * @param {any} identity - The identity configuration containing the client's self Threema ID.
+ * @returns {Promise<void>} Resolves when the ping operation completes.
+ */
 async function performSelfPing(client: any, identity: any) {
     if (!client) return;
     
