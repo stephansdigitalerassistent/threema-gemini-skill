@@ -1,29 +1,21 @@
+import { SKILL_ROOT } from './load-env.js';
 import { MediatorClient } from 'threema-openclaw/src/mediator-client.js';
 import { resolveThreemaDataDir, resolveThreemaIdentityPath } from 'threema-openclaw/src/runtime-paths.js';
 import * as fs from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
 import { exec } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import util from 'node:util';
-import dotenv from 'dotenv';
-
-const execAsync = util.promisify(exec);
-const fsPromises = fs.promises;
-
-// Resolve directory
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SKILL_ROOT = path.join(__dirname, '..');
-dotenv.config({ path: path.join(SKILL_ROOT, '.env') });
-
-// Load history helpers (ESM)
 import {  addMessage, formatHistoryForPrompt, trackConsumption, getRemoteQuota, getConsumption  } from '../../src/core/history.js';
 import { runGeminiAsync, runSmartGemini } from '../../src/common/gemini-client.mjs';
 import { addPendingRequest, updateRequestStatus, getIncompleteRequests, enqueueTask as dbEnqueueTask, setSessionContext, getSessionContext } from '../../src/db/db_helper.js';
 import { upsertContact, upsertGroup, getAllContacts, getAllGroups } from '../../src/db/contacts.js';
 import { checkIsCommand, createApprovalRequest } from '../../src/common/approval-manager.mjs';
-
 import { AgentMessage, AGENT_TYPES, MESSAGE_TYPES } from '../../src/common/agent-protocol.mjs';
 import crypto from 'node:crypto';
+import * as http from 'node:http';
+
+const execAsync = util.promisify(exec);
 
 const DATA_DIR = path.join(SKILL_ROOT, 'data');
 process.env.THREEMA_DATA_DIR = DATA_DIR;
@@ -110,8 +102,6 @@ const GROUPS_FILE = path.join(DATA_DIR, 'groups.json');
 const CONTACTS_FILE = path.join(DATA_DIR, 'contacts.json');
 const observedGroups = new Map<string, { name?: string, members: Set<string> }>();
 const observedContacts = new Map<string, { firstName?: string, lastName?: string, nickname?: string }>();
-
-import * as http from 'node:http';
 
 const ipcServer = http.createServer((req, res) => {
     if ((req.method === 'GET' || req.method === 'HEAD') && req.url === '/status') {
@@ -376,7 +366,7 @@ async function processEnvelope(envelope: any) {
                         const groupIdHex = Buffer.from(groupId).toString('hex');
                         const groupName = new TextDecoder().decode(msg.body.subarray(8)).replace(/\0+$/g, '');
                         
-                        const existing = observedGroups.get(groupIdHex) || { members: new Set([msg.senderIdentity]) };
+                        const existing = observedGroups.get(groupIdHex) || { name: undefined, members: new Set([msg.senderIdentity]) };
                         existing.name = groupName;
                         observedGroups.set(groupIdHex, existing);
                         await saveGroups();
@@ -557,7 +547,8 @@ client.sendTextMessage = async (recipient: string, text: string) => {
             channel: 'threema',
             sender_id: 'assistant',
             sender_name: 'Assistant',
-            group_id: null, // Threema openclaw group sends might not be just plain sendTextMessage, but let's leave it null for now
+            group_id: null,
+            group_name: null,
             content: text || '[Non-Text]'
         });
     } catch(e: any) { await log('DB Log Outbound Error: ' + e.message); }
@@ -605,6 +596,7 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
     }
 
     const groupIdHex = groupContext ? Buffer.from(groupContext.groupId).toString('hex') : null;
+    let groupName = (groupContext && groupIdHex) ? (observedGroups.get(groupIdHex)?.name || null) : null;
 
     if (text && text.includes('[HEALTH_CHECK_PING]')) {
         return; // Ignore internal health pings
@@ -629,6 +621,7 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
             sender_id: senderId,
             sender_name: senderId, // Nickname fetching is async or cached, sticking to ID for safety
             group_id: groupIdHex,
+            group_name: groupName || null,
             content: text || (mediaPath ? `[Media: ${path.basename(mediaPath)}]` : '[Unknown]'),
             provider_msg_id: msgIdStr,
             status: 'processing'
@@ -650,7 +643,6 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         }
     } catch(e: any) { await log('DB Log Inbound Error: ' + e.message); }
 
-    let groupName: string | undefined;
     if (groupContext && groupIdHex) {
         const group = observedGroups.get(groupIdHex) || { members: new Set(STEPHAN_THREEMA_ID ? [STEPHAN_THREEMA_ID] : []) };
         const oldSize = group.members.size;
@@ -991,6 +983,7 @@ const remoteQuota = await getRemoteQuota();
             if (devContext) {
                 await dbEnqueueTask({
                     channel: 'threema', senderId: senderId, senderName: userName, groupId: groupIdHex,
+                    groupName: groupName || null,
                     content: text,
                     metadata: { ...devContext, systemPromptPath, isTrustedAdmin, requestId }
                 });

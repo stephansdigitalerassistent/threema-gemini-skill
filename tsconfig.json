@@ -7,8 +7,11 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "allowJs": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
     "paths": {
-      "threema-openclaw/*": ["./node_modules/threema-openclaw/*"]
+      "threema-openclaw/*": ["./scripts/threema-openclaw-local/*"]
     }
   }
 }
