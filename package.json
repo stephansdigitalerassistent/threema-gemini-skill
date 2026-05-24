@@ -29,12 +29,12 @@
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "threema-openclaw": "file:../threema-new/threema-openclaw",
-    "tsx": "^4.22.3",
     "tweetnacl": "^1.0.3",
     "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
     "typescript": "^6.0.3"
   }
 }
