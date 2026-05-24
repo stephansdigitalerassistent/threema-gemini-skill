@@ -14,6 +14,7 @@ import { checkIsCommand, createApprovalRequest } from '../../src/common/approval
 import { AgentMessage, AGENT_TYPES, MESSAGE_TYPES } from '../../src/common/agent-protocol.mjs';
 import crypto from 'node:crypto';
 import * as http from 'node:http';
+import * as https from 'node:https';
 
 const execAsync = util.promisify(exec);
 
@@ -1274,6 +1275,75 @@ client.on('close', async (code, reason) => {
     process.exit(1);
 });
 
+async function checkAndEnqueueOpenclawTask() {
+    try {
+        const statePath = path.join(DATA_DIR, 'openclaw-upgrade-state.json');
+        let state = { enqueued: false };
+        try {
+            if (fs.existsSync(statePath)) {
+                state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+            }
+        } catch (e: any) {
+            await log(`[UpgradeCheck] Error reading state file: ${e.message}`);
+        }
+
+        if (state.enqueued) {
+            return;
+        }
+
+        await log(`[UpgradeCheck] Checking npm registry for threema-openclaw...`);
+        https.get('https://registry.npmjs.org/threema-openclaw/latest', (res) => {
+            let data = '';
+            res.on('data', (chunk) => { data += chunk; });
+            res.on('end', async () => {
+                try {
+                    if (res.statusCode !== 200) {
+                        await log(`[UpgradeCheck] Failed to fetch registry: HTTP ${res.statusCode}`);
+                        return;
+                    }
+                    const info = JSON.parse(data);
+                    const latestVersion = info.version;
+                    await log(`[UpgradeCheck] Latest version on npm: ${latestVersion}`);
+
+                    const isNewer = compareVersions(latestVersion, '0.1.2') > 0;
+                    if (isNewer) {
+                        await log(`[UpgradeCheck] New version ${latestVersion} detected! Enqueuing burn task...`);
+                        const { addQuotaTask } = await import('/home/ubuntu/src/db/db_helper.js');
+                        await addQuotaTask(
+                            '/home/ubuntu/threema-new/threema-openclaw',
+                            'bump @noble/ciphers (^2.1.1), @noble/curves (^2.0.1), and @noble/hashes (^2.0.1) to ^2.2.0 in its package.json',
+                            'pro',
+                            'deps',
+                            100
+                        );
+                        state.enqueued = true;
+                        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+                        await log(`[UpgradeCheck] Burn task successfully enqueued.`);
+                    }
+                } catch (e: any) {
+                    log(`[UpgradeCheck] Error parsing registry response: ${e.message}`);
+                }
+            });
+        }).on('error', async (e) => {
+            await log(`[UpgradeCheck] HTTPS request error: ${e.message}`);
+        });
+    } catch (err: any) {
+        await log(`[UpgradeCheck] Error: ${err.message}`);
+    }
+}
+
+function compareVersions(v1: string, v2: string): number {
+    const parts1 = v1.split('.').map(Number);
+    const parts2 = v2.split('.').map(Number);
+    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+        const p1 = parts1[i] || 0;
+        const p2 = parts2[i] || 0;
+        if (p1 > p2) return 1;
+        if (p1 < p2) return -1;
+    }
+    return 0;
+}
+
 async function start() {
     await loadGroups();
     await loadContacts();
@@ -1283,6 +1353,12 @@ async function start() {
         setInterval(() => performSelfPing(client, identity), 15 * 60 * 1000);
         // Initial ping after 60 seconds
         setTimeout(() => performSelfPing(client, identity), 60 * 1000);
+
+        // Check for threema-openclaw updates immediately and every 10 minutes
+        checkAndEnqueueOpenclawTask().catch(e => log(`[UpgradeCheck] Init error: ${e.message}`));
+        setInterval(() => {
+            checkAndEnqueueOpenclawTask().catch(e => log(`[UpgradeCheck] Interval error: ${e.message}`));
+        }, 10 * 60 * 1000);
     }).catch(async err => {
         await log(`FATAL: ${err.message}`);
         process.exit(1);
