@@ -4,9 +4,18 @@ import { x25519 } from '@noble/curves/ed25519.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 
+interface WycheproofTestVector {
+  tcId: number;
+  comment: string;
+  public: string;
+  private: string;
+  shared: string;
+  result: string;
+}
+
 describe('Wycheproof Edge Cases', () => {
   describe('X25519', () => {
-    const x25519Vectors = [
+    const x25519Vectors: WycheproofTestVector[] = [
       {
         tcId: 1,
         comment: 'normal case',
