@@ -1,9 +1,12 @@
 /**
  * @file listener-openclaw.ts
  * @description Serves as a bridge between the 'threema-openclaw' MediatorClient and the Gemini AI.
- * It listens to and processes incoming Threema messages (both direct and group), routes relevant
- * communication to Gemini AI for intelligent replies, forwards unauthorized messages to Telegram,
- * supports voice message transcription, and implements self-healing network connectivity checks.
+ * 
+ * Features:
+ * - Message routing (listening to and processing incoming direct and group Threema messages).
+ * - Telegram forwarding of unauthorized messages.
+ * - Voice message transcription.
+ * - Network connectivity checks and self-healing.
  */
 
 import { SKILL_ROOT } from './load-env.js';
