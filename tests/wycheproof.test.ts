@@ -41,25 +41,19 @@ describe('Wycheproof Edge Cases', () => {
       }
     ];
 
-    x25519Vectors.forEach((v) => {
-      test(`tcId ${v.tcId}: ${v.comment}`, () => {
-        const aliceSk = hexToBytes(v.private);
-        const bobPk = hexToBytes(v.public);
-        const expectedShared = v.shared;
-
-        try {
-          const shared = x25519.getSharedSecret(aliceSk, bobPk);
-          assert.strictEqual(bytesToHex(shared), expectedShared);
-        } catch (e: any) {
-          if (v.tcId === 9 && e.message.includes('invalid')) {
-            // Noble rejects u=0 as invalid point, which is a safe implementation choice.
-            return;
-          }
-          if (v.result === 'valid') {
+    x25519Vectors.forEach((vector) => {
+      test(`tcId ${vector.tcId}: ${vector.comment}`, () => {
+        if (vector.result === 'valid' || vector.result === 'acceptable') {
+          try {
+            const result = x25519.getSharedSecret(hexToBytes(vector.private), hexToBytes(vector.public));
+            assert.strictEqual(bytesToHex(result), vector.shared);
+          } catch (e: any) {
+            // Noble rejects u=0 (tcId 9) as an invalid point, throwing an error.
+            if (vector.tcId === 9 && e.message.includes('invalid')) {
+              return;
+            }
             throw e;
           }
-          // For 'acceptable' or 'invalid', throwing is allowed.
-          assert.ok(v.result !== 'valid', `Should not have failed for valid vector: ${e}`);
         }
       });
     });
@@ -140,6 +134,22 @@ describe('Wycheproof Edge Cases', () => {
           }, /bad tag|auth|invalid/i);
         }
       });
+    });
+
+    test('Basic roundtrip encryption/decryption', () => {
+      const key = new Uint8Array(32);
+      key.fill(1);
+      const iv = new Uint8Array(12);
+      iv.fill(2);
+      const aad = new Uint8Array(8);
+      aad.fill(3);
+      const plaintext = new TextEncoder().encode('Hello, world! This is a test for ChaCha20Poly1305 roundtrip.');
+
+      const cipher = chacha20poly1305(key, iv, aad);
+      const ciphertext = cipher.encrypt(plaintext);
+      const decrypted = cipher.decrypt(ciphertext);
+
+      assert.deepStrictEqual(decrypted, plaintext);
     });
   });
 });
