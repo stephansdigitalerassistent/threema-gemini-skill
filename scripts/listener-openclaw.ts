@@ -857,19 +857,40 @@ const remoteQuota = await getRemoteQuota();
                 const { query, addQuotaTask } = await import('/home/ubuntu/src/db/db_helper.js');
                 
                 if (subCommand === 'status' || !subCommand) {
+                    const calibrationStats = await query(
+                        `SELECT 
+                            COUNT(CASE WHEN state IN ('approved', 'implemented') THEN 1 END) as approved,
+                            COUNT(CASE WHEN state = 'rejected' THEN 1 END) as rejected
+                         FROM evolution_findings
+                         WHERE timestamp > NOW() - interval '30 days'`
+                    );
+                    const approved = parseInt(calibrationStats[0]?.approved || '0', 10);
+                    const rejected = parseInt(calibrationStats[0]?.rejected || '0', 10);
+                    const totalRated = approved + rejected;
+                    const agreementRate = totalRated > 0 ? (approved / totalRated) * 100 : null;
+
+                    let msg = "🧠 *Evolution Calibration Loop Status (Last 30 Days)*\n";
+                    if (totalRated > 0) {
+                        msg += `• Approved: ${approved} | Rejected: ${rejected}\n`;
+                        msg += `• Agreement Rate: ${agreementRate.toFixed(1)}% (Target: >85%)\n`;
+                        msg += `• Status: ${agreementRate >= 85 ? 'READY FOR PHASE 3 🚀' : 'UNDER TARGET ⚠️ (Need >85%)'}\n\n`;
+                    } else {
+                        msg += `• No findings rated in the last 30 days.\n\n`;
+                    }
+
                     const findings = await query(
                         "SELECT id, component, kind, impact_level, description FROM evolution_findings WHERE state = 'pending' ORDER BY timestamp DESC LIMIT 10"
                     );
                     if (findings.length === 0) {
-                        await client.sendTextMessage(senderId, "🧠 *Evolution Status*:\nKeine ausstehenden Findings zur Kalibrierung.");
-                        return;
+                        msg += "Keine ausstehenden Findings zur Kalibrierung.";
+                    } else {
+                        msg += "*Ausstehende Findings*:\n\n";
+                        findings.forEach((f: any) => {
+                            msg += `*ID #${f.id}* [${f.component}] (${f.kind} - ${f.impact_level})\n`;
+                            msg += `Description: ${f.description}\n`;
+                            msg += `Freigabe: \`/evolution approve ${f.id}\` oder ablehnen: \`/evolution reject ${f.id} <grund>\`\n\n`;
+                        });
                     }
-                    let msg = "🧠 *Ausstehende Evolution Findings*:\n\n";
-                    findings.forEach((f: any) => {
-                        msg += `*ID #${f.id}* [${f.component}] (${f.kind} - ${f.impact_level})\n`;
-                        msg += `Description: ${f.description}\n`;
-                        msg += `Freigabe: \`/evolution approve ${f.id}\` oder ablehnen: \`/evolution reject ${f.id} <grund>\`\n\n`;
-                    });
                     await client.sendTextMessage(senderId, msg);
                 } else if (subCommand === 'approve') {
                     const id = parseInt(parts[2], 10);
