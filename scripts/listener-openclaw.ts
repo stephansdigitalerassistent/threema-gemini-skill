@@ -913,9 +913,8 @@ const remoteQuota = await getRemoteQuota();
                     await query("UPDATE evolution_findings SET state = 'approved' WHERE id = $1", [id]);
                     
                     // Create task in burn queue
-                    const targetDir = finding.component === 'burn-worker' || finding.component === 'assistant-core' || finding.component === 'evolution-critic'
-                        ? '/home/ubuntu'
-                        : `/home/ubuntu/${finding.component}`;
+                    const componentPath = `/home/ubuntu/${finding.component}`;
+                    const targetDir = fs.existsSync(componentPath) ? componentPath : '/home/ubuntu';
                         
                     const taskDesc = finding.proposed_action || finding.description;
                     const kind = finding.kind === 'bug' ? 'impl' : (finding.kind === 'missing-test' ? 'test' : 'refactor');
