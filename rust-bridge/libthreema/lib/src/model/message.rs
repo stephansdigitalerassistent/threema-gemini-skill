@@ -858,10 +858,11 @@ impl IncomingMessageBody {
             },
 
             CspE2eMessageType::ForwardSecurityEnvelope => {
-                let _ = reader.skip(reader.remaining());
-                Self::Contact(ContactMessageBody::Text(TextMessage {
-                    text: "[Perfect Forward Secrecy (PFS) wird aktuell noch nicht unterstützt. Bitte nutze Threema Web oder schreibe mir via Telegram/WhatsApp.]".to_owned(),
-                }))
+                let data = reader.read_remaining().to_vec();
+                Self::Contact(ContactMessageBody::Unknown {
+                    r#type: CspE2eMessageType::ForwardSecurityEnvelope,
+                    data,
+                })
             },
             // Handle all other types as Unknown (including File/Voice messages)
             _ => {
