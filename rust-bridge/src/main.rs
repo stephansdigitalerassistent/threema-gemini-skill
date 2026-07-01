@@ -170,6 +170,10 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
 struct CspE2eReceiveCommand {
     #[command(flatten)]
     config: FullIdentityConfigOptions,
+
+    /// User nickname
+    #[arg(long, default_value = "Stephans digitaler Assistent")]
+    nickname: String,
 }
 
 enum IncomingPayloadForCspE2e {
@@ -648,6 +652,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Parse arguments for command
     let arguments = CspE2eReceiveCommand::parse();
+    let nickname: &'static str = Box::leak(arguments.nickname.into_boxed_str());
     let config = FullIdentityConfig::from_options(&http_client, arguments.config).await?;
 
     // Create CSP E2EE protocol context
@@ -798,7 +803,7 @@ async fn main() -> anyhow::Result<()> {
                                 
                                 let outgoing_box = libthreema::csp_e2e::message::task::outgoing::encode_and_encrypt_message(
                                     user_identity,
-                                    (None, libthreema::common::Delta::Update("Stephans digitaler Assistent")),
+                                    (None, libthreema::common::Delta::Update(nickname)),
                                     receiver_identity,
                                     shared_secret,
                                     &message,
