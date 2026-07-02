@@ -946,6 +946,10 @@ impl State {
 
                 ContactMessageBody::Unknown { .. } => {
                     info!(?inner_type, "Handling unknown/file message via bridge (no internal processing)");
+                    context
+                        .conversations
+                        .borrow_mut()
+                        .add_or_update_incoming_message(message.inner.clone())?;
                 }
             },
 
