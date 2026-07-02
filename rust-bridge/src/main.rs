@@ -1022,7 +1022,7 @@ async fn main() -> anyhow::Result<()> {
                                 };
                                 
                                 if let Ok(msg_box) = libthreema::csp::payload::MessageWithMetadataBox::try_from(outgoing_box) {
-                                    let _ = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box)).await;
+                                    let _ = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box));
                                 }
                             }
                         }
