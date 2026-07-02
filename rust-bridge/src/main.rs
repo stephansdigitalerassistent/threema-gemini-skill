@@ -108,6 +108,7 @@ pub enum BridgeOutput {
         message_type: i32,
         data_hex: String,
         timestamp: u64,
+        message_id: String,
     },
     Log {
         level: String,
@@ -154,6 +155,7 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
                             message_type: *r#type as i32,
                             data_hex: HEXLOWER.encode(data),
                             timestamp: message.created_at,
+                            message_id: format!("{:016x}", message.id.0),
                         }).unwrap_or_default());
                     },
                     _ => {
@@ -176,6 +178,7 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
                             message_type: *r#type as i32,
                             data_hex: HEXLOWER.encode(data),
                             timestamp: message.created_at,
+                            message_id: format!("{:016x}", message.id.0),
                         }).unwrap_or_default());
                     },
                     _ => {
