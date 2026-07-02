@@ -69,6 +69,15 @@ use libthreema::common::config::Flavor;
 
 
 
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let mut stdout = std::io::stdout();
+        let _ = std::io::Write::write_fmt(&mut stdout, format_args!($($arg)*));
+        let _ = std::io::Write::write_all(&mut stdout, b"\n");
+        let _ = std::io::Write::flush(&mut stdout);
+    }};
+}
 
 use std::io::BufRead;
 
@@ -214,14 +223,14 @@ impl From<OutgoingPayloadForCspE2e> for OutgoingPayload {
 
 /// Payload queues for the main process
 struct PayloadQueuesForCspE2e {
-    incoming: mpsc::Receiver<IncomingPayloadForCspE2e>,
-    outgoing: mpsc::Sender<OutgoingPayloadForCspE2e>,
+    incoming: mpsc::UnboundedReceiver<IncomingPayloadForCspE2e>,
+    outgoing: mpsc::UnboundedSender<OutgoingPayloadForCspE2e>,
 }
 
 /// Payload queues for the protocol flow runner
 struct PayloadQueuesForCsp {
-    incoming: mpsc::Sender<IncomingPayloadForCspE2e>,
-    outgoing: mpsc::Receiver<OutgoingPayloadForCspE2e>,
+    incoming: mpsc::UnboundedSender<IncomingPayloadForCspE2e>,
+    outgoing: mpsc::UnboundedReceiver<OutgoingPayloadForCspE2e>,
 }
 
 struct CspProtocolRunner {
@@ -378,14 +387,14 @@ println!("{}", serde_json::to_string(&BridgeOutput::HandshakeComplete).unwrap())
                         queues
                             .incoming
                             .send(IncomingPayloadForCspE2e::Message(payload))
-                            .await?;
+                            .map_err(|e| anyhow::anyhow!("incoming channel send error: {}", e))?;
                     },
                     IncomingPayload::MessageAck(payload) => {
                         // Forward message ack
                         queues
                             .incoming
                             .send(IncomingPayloadForCspE2e::MessageAck(payload))
-                            .await?;
+                            .map_err(|e| anyhow::anyhow!("incoming channel send error: {}", e))?;
                     },
 
                     IncomingPayload::EchoResponse(_)
@@ -602,7 +611,7 @@ impl CspE2eProtocolRunner {
                         queues
                             .outgoing
                             .send(OutgoingPayloadForCspE2e::MessageAck(outgoing_message_ack))
-                            .await?;
+                            .map_err(|e| anyhow::anyhow!("outgoing channel send error: {}", e))?;
                     }
                     pending_task = None;
                 },
@@ -696,16 +705,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Create payload queues
     let (csp_e2e_queues, csp_queues) = {
-        let incoming_payload = mpsc::channel(4);
-        let outgoing_payload = mpsc::channel(4);
+        let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (outgoing_tx, outgoing_rx) = mpsc::unbounded_channel();
         (
             PayloadQueuesForCspE2e {
-                incoming: incoming_payload.1,
-                outgoing: outgoing_payload.0,
+                incoming: incoming_rx,
+                outgoing: outgoing_tx,
             },
             PayloadQueuesForCsp {
-                incoming: incoming_payload.0,
-                outgoing: outgoing_payload.1,
+                incoming: incoming_tx,
+                outgoing: outgoing_rx,
             },
         )
     };
@@ -751,7 +760,7 @@ async fn main() -> anyhow::Result<()> {
         _ = signal::ctrl_c() => {},
         _ = async {
             use tokio::io::AsyncBufReadExt;
-            let _ = stdin_tx.send(OutgoingPayloadForCspE2e::UnblockIncomingMessages).await;
+            let _ = stdin_tx.send(OutgoingPayloadForCspE2e::UnblockIncomingMessages);
             while let Ok(len) = stdin_lines.read_line(&mut current_line).await {
                 if len == 0 { break; }
                 let trimmed = current_line.trim();
@@ -800,6 +809,7 @@ async fn main() -> anyhow::Result<()> {
                             };
 
                             if let Some(contact) = contact {
+                                println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "info".to_string(), message: "Contact resolved successfully, encrypting...".to_string() }).unwrap_or_default());
                                 let shared_secret = client_key.derive_csp_e2e_key(&contact.public_key);
                                 
                                 let message = libthreema::model::message::OutgoingMessage {
@@ -824,9 +834,20 @@ async fn main() -> anyhow::Result<()> {
                                     &message,
                                     libthreema::common::Nonce::random(),
                                 );
+                                println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "info".to_string(), message: "Encryption complete, converting to MessageWithMetadataBox...".to_string() }).unwrap_or_default());
                                 
-                                if let Ok(msg_box) = libthreema::csp::payload::MessageWithMetadataBox::try_from(outgoing_box) {
-                                    let _ = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box)).await;
+                                match libthreema::csp::payload::MessageWithMetadataBox::try_from(outgoing_box) {
+                                    Ok(msg_box) => {
+                                        println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "info".to_string(), message: "Conversion successful, sending to channel...".to_string() }).unwrap_or_default());
+                                        if let Err(e) = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box)) {
+                                            println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("Failed to send message payload to channel: {}", e) }).unwrap_or_default());
+                                        } else {
+                                            println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "info".to_string(), message: "Payload enqueued successfully in outgoing channel".to_string() }).unwrap_or_default());
+                                        }
+                                    },
+                                    Err(e) => {
+                                        println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("Failed to convert outgoing box: {:?}", e) }).unwrap_or_default());
+                                    }
                                 }
                             }
                         }
@@ -909,8 +930,15 @@ async fn main() -> anyhow::Result<()> {
                                     message_container,
                                 };
                                 
-                                if let Ok(msg_box) = libthreema::csp::payload::MessageWithMetadataBox::try_from(outgoing_box) {
-                                    let _ = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box)).await;
+                                match libthreema::csp::payload::MessageWithMetadataBox::try_from(outgoing_box) {
+                                    Ok(msg_box) => {
+                                         if let Err(e) = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box)) {
+                                             println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("Failed to send raw payload to channel: {}", e) }).unwrap_or_default());
+                                        }
+                                    },
+                                    Err(e) => {
+                                        println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("Failed to convert outgoing raw box: {:?}", e) }).unwrap_or_default());
+                                    }
                                 }
                             }
                         }
