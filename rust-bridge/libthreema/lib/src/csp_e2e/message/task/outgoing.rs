@@ -9,7 +9,7 @@ use crate::{
     utils::bytes::OwnedVecByteWriter,
 };
 
-pub(super) fn encode_metadata(
+pub fn encode_metadata(
     sender_nickname: Delta<&str>,
     message: &OutgoingMessage,
     effective_message_properties: &MessageProperties,
@@ -27,7 +27,7 @@ pub(super) fn encode_metadata(
 }
 
 // TODO(LIB-51): Make encryption fallible
-pub(super) fn encrypt_metadata_in_place(shared_secret: &CspE2eKey, nonce: &Nonce, metadata: &mut Vec<u8>) {
+pub fn encrypt_metadata_in_place(shared_secret: &CspE2eKey, nonce: &Nonce, metadata: &mut Vec<u8>) {
     shared_secret
         .message_metadata_cipher()
         .0
@@ -36,7 +36,7 @@ pub(super) fn encrypt_metadata_in_place(shared_secret: &CspE2eKey, nonce: &Nonce
 }
 
 // TODO(LIB-51): Make encryption fallible
-pub(super) fn encrypt_message_container_in_place(
+pub fn encrypt_message_container_in_place(
     shared_secret: &CspE2eKey,
     nonce: &Nonce,
     message_container: &mut Vec<u8>,
