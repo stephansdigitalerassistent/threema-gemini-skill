@@ -68,6 +68,11 @@ pub enum BridgeInput {
     SendMessage {
         recipient: String,
         text: String,
+    },
+    SendRaw {
+        recipient: String,
+        message_type: u8,
+        data_hex: String,
     }
 }
 
@@ -809,6 +814,90 @@ async fn main() -> anyhow::Result<()> {
                                     &message,
                                     libthreema::common::Nonce::random(),
                                 );
+                                
+                                if let Ok(msg_box) = libthreema::csp::payload::MessageWithMetadataBox::try_from(outgoing_box) {
+                                    let _ = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box)).await;
+                                }
+                            }
+                        }
+                    },
+                    Ok(BridgeInput::SendRaw { recipient, message_type, data_hex }) => {
+                        if let Ok(receiver_identity) = libthreema::common::ThreemaId::try_from(recipient.as_str()) {
+                            let data = match HEXLOWER.decode(data_hex.as_bytes()) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("SendRaw: invalid hex: {}", e) }).unwrap_or_default());
+                                    continue;
+                                }
+                            };
+                            
+                            let contact_opt = {
+                                let contacts = database_contacts.borrow();
+                                contacts.get(&receiver_identity).map(|(c, _)| c.clone())
+                            };
+                            
+                            let contact = if let Some(c) = contact_opt {
+                                Some(c)
+                            } else {
+                                // Perform Directory Lookup
+                                let request = request_identities(
+                                    &ClientInfo::Libthreema,
+                                    &config.minimal.common.config.directory_server_url,
+                                    &config.minimal.common.flavor,
+                                    &[receiver_identity],
+                                );
+                                match handle_identities_result(request.send(&http_client).await) {
+                                    Ok(identities) => {
+                                        let identities: Vec<libthreema::model::contact::ContactInit> = identities;
+                                        if let Some(init) = identities.into_iter().next() {
+                                            let new_contact = libthreema::model::contact::Contact::from(init);
+                                            database_contacts.borrow_mut().insert(receiver_identity, (new_contact.clone(), None));
+                                            Some(new_contact)
+                                        } else {
+                                            None
+                                        }
+                                    },
+                                    Err(_) => None
+                                }
+                            };
+
+                            if let Some(contact) = contact {
+                                let shared_secret = client_key.derive_csp_e2e_key(&contact.public_key);
+                                let nonce = libthreema::common::Nonce::random();
+                                
+                                let mut message_container = vec![message_type];
+                                message_container.extend_from_slice(&data);
+                                
+                                // PKCS#7 padding to block size 16
+                                let padding_len = 16 - (message_container.len() % 16);
+                                message_container.resize(message_container.len() + padding_len, padding_len as u8);
+                                
+                                // Encrypt message container
+                                libthreema::csp_e2e::message::task::outgoing::encrypt_message_container_in_place(&shared_secret, &nonce, &mut message_container);
+                                
+                                // Encode and encrypt metadata
+                                let message_id = libthreema::common::MessageId::random();
+                                let created_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                                let mut metadata: Vec<u8> = libthreema::common::MessageMetadata {
+                                    message_id,
+                                    created_at,
+                                    nickname: libthreema::common::Delta::Update(nickname.to_owned()),
+                                }.into();
+                                libthreema::csp_e2e::message::task::outgoing::encrypt_metadata_in_place(&shared_secret, &nonce, &mut metadata);
+                                
+                                let legacy_created_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as u32;
+                                
+                                let outgoing_box = libthreema::csp_e2e::message::payload::OutgoingMessageWithMetadataBox {
+                                    sender_identity: user_identity,
+                                    receiver_identity,
+                                    id: message_id,
+                                    legacy_created_at,
+                                    flags: libthreema::common::MessageFlags(1),
+                                    legacy_sender_nickname: Some(nickname.to_owned()),
+                                    metadata,
+                                    nonce,
+                                    message_container,
+                                };
                                 
                                 if let Ok(msg_box) = libthreema::csp::payload::MessageWithMetadataBox::try_from(outgoing_box) {
                                     let _ = stdin_tx.send(OutgoingPayloadForCspE2e::MessageWithMetadataBox(msg_box)).await;
