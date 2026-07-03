@@ -92,6 +92,11 @@ pub enum BridgeInput {
         recipient: String,
         message_type: u8,
         data_hex: String,
+    },
+    /// Seed the in-memory contact store (directory lookup) so that incoming
+    /// group messages from these identities are not discarded.
+    AddContacts {
+        identities: Vec<String>,
     }
 }
 
@@ -103,6 +108,11 @@ pub enum BridgeOutput {
         text: String,
         timestamp: u64,
         message_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        group_creator: Option<String>,
+        /// Group ID in wire byte order (hex)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
     },
     Unknown {
         sender: String,
@@ -110,6 +120,11 @@ pub enum BridgeOutput {
         data_hex: String,
         timestamp: u64,
         message_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        group_creator: Option<String>,
+        /// Group ID in wire byte order (hex)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        group_id: Option<String>,
     },
     Log {
         level: String,
@@ -149,6 +164,8 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
                             text: text_msg.text.clone(),
                             timestamp: message.created_at,
                             message_id: format!("{:016x}", message.id.0),
+                            group_creator: None,
+                            group_id: None,
                         }).unwrap_or_default());
                     },
                     ContactMessageBody::Unknown { r#type, data } => {
@@ -158,6 +175,8 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
                             data_hex: HEXLOWER.encode(data),
                             timestamp: message.created_at,
                             message_id: format!("{:016x}", message.id.0),
+                            group_creator: None,
+                            group_id: None,
                         }).unwrap_or_default());
                     },
                     _ => {
@@ -169,19 +188,25 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
                 match &group_msg.body {
                     GroupMessageBody::Text(text_msg) => {
                         println!("BRIDGE-JSON: {}", serde_json::to_string(&BridgeOutput::Message {
-                            sender: format!("*{:x}", group_msg.group_identity.group_id), // Group ID marker
+                            sender: message.sender_identity.to_string(),
                             text: text_msg.text.clone(),
                             timestamp: message.created_at,
                             message_id: format!("{:016x}", message.id.0),
+                            group_creator: Some(group_msg.group_identity.creator_identity.to_string()),
+                            group_id: Some(HEXLOWER.encode(&group_msg.group_identity.group_id.to_le_bytes())),
                         }).unwrap_or_default());
                     },
                     GroupMessageBody::Unknown { r#type, data } => {
+                        // Note: `data` still contains the full body including the
+                        // 16-byte group header (creator + group ID).
                         println!("BRIDGE-JSON: {}", serde_json::to_string(&BridgeOutput::Unknown {
-                            sender: format!("*{:x}", group_msg.group_identity.group_id),
+                            sender: message.sender_identity.to_string(),
                             message_type: *r#type as i32,
                             data_hex: HEXLOWER.encode(data),
                             timestamp: message.created_at,
                             message_id: format!("{:016x}", message.id.0),
+                            group_creator: Some(group_msg.group_identity.creator_identity.to_string()),
+                            group_id: Some(HEXLOWER.encode(&group_msg.group_identity.group_id.to_le_bytes())),
                         }).unwrap_or_default());
                     },
                     _ => {
@@ -946,6 +971,37 @@ async fn main() -> anyhow::Result<()> {
                                         println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("Failed to convert outgoing raw box: {:?}", e) }).unwrap_or_default());
                                     }
                                 }
+                            }
+                        }
+                    },
+                    Ok(BridgeInput::AddContacts { identities }) => {
+                        let unknown_identities: Vec<libthreema::common::ThreemaId> = identities
+                            .iter()
+                            .filter_map(|id| libthreema::common::ThreemaId::try_from(id.as_str()).ok())
+                            .filter(|id| !database_contacts.borrow().contains_key(id))
+                            .collect();
+                        if unknown_identities.is_empty() {
+                            println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "info".to_string(), message: "AddContacts: all identities already known".to_string() }).unwrap_or_default());
+                            continue;
+                        }
+                        let request = request_identities(
+                            &ClientInfo::Libthreema,
+                            &config.minimal.common.config.directory_server_url,
+                            &config.minimal.common.flavor,
+                            &unknown_identities,
+                        );
+                        match handle_identities_result(request.send(&http_client).await) {
+                            Ok(identities) => {
+                                let identities: Vec<libthreema::model::contact::ContactInit> = identities;
+                                let count = identities.len();
+                                for init in identities {
+                                    let contact = libthreema::model::contact::Contact::from(init);
+                                    database_contacts.borrow_mut().insert(contact.identity, (contact, None));
+                                }
+                                println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "info".to_string(), message: format!("AddContacts: seeded {} of {} requested contacts", count, unknown_identities.len()) }).unwrap_or_default());
+                            },
+                            Err(e) => {
+                                println!("{}", serde_json::to_string(&BridgeOutput::Log { level: "error".to_string(), message: format!("AddContacts: directory lookup failed: {:?}", e) }).unwrap_or_default());
                             }
                         }
                     },

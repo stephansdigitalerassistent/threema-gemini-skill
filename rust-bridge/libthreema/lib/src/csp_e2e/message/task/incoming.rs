@@ -955,11 +955,15 @@ impl State {
 
             // All group messages...
             //
-            // TODO(LIB-53): Handle them
+            // TODO(LIB-53): Handle them properly (group-setup validation, sync requests). For the
+            // bridge use case we hand every group message to the conversation provider, which
+            // forwards it over stdout; group state is managed by the TS listener.
             IncomingMessageBody::Group(_) => {
-                return Err(CspE2eProtocolError::DesyncError(
-                    "Ain't nobody got time to implement handling group messages".to_owned(),
-                ));
+                info!(?inner_type, "Adding group message to conversation (bridge passthrough)");
+                context
+                    .conversations
+                    .borrow_mut()
+                    .add_or_update_incoming_message(message.inner.clone())?;
             },
         }
 
