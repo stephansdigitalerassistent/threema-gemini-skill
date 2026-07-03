@@ -629,7 +629,7 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
         const contextStr = groupContext ? `in group ${groupContext.creator}-${groupIdHex}` : 'directly';
         await log(`Ignored message from ECHOECHO ${contextStr} to prevent loop: ${text}`);
         if (msgIdStr) {
-            client.sendDeliveryReceipt(senderId, [msgIdStr], 3).catch(err => {
+            client.sendDeliveryReceipt(senderId, [msgIdStr], 2).catch(err => {
                 log(`Error sending read receipt for ECHOECHO ${msgIdStr}: ${err.message}`);
             });
         }
@@ -652,7 +652,7 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
 
         if (!logged && msgIdStr) {
             await log(`[Deduplication] Skipping already processed message ${msgIdStr}`);
-            client.sendDeliveryReceipt(senderId, [msgIdStr], 3).catch(err => {
+            client.sendDeliveryReceipt(senderId, [msgIdStr], 2).catch(err => {
                 log(`Error sending late read receipt for duplicate ${msgIdStr}: ${err.message}`);
             });
             return;
@@ -660,7 +660,7 @@ async function handleMessage(senderId: string, text: string, mediaPath: string |
 
         // --- SUCCESS: Message is in DB. Now we can acknowledge to Threema ---
         if (msgIdStr && !text.includes('[HEALTH_CHECK_PING]')) {
-            client.sendDeliveryReceipt(senderId, [msgIdStr], 3).catch(err => {
+            client.sendDeliveryReceipt(senderId, [msgIdStr], 2).catch(err => {
                 log(`Error sending late read receipt for ${msgIdStr}: ${err.message}`);
             });
         }

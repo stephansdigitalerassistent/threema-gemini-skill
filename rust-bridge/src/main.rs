@@ -102,6 +102,7 @@ pub enum BridgeOutput {
         sender: String,
         text: String,
         timestamp: u64,
+        message_id: String,
     },
     Unknown {
         sender: String,
@@ -147,6 +148,7 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
                             sender: message.sender_identity.to_string(),
                             text: text_msg.text.clone(),
                             timestamp: message.created_at,
+                            message_id: format!("{:016x}", message.id.0),
                         }).unwrap_or_default());
                     },
                     ContactMessageBody::Unknown { r#type, data } => {
@@ -170,6 +172,7 @@ impl libthreema::model::provider::ConversationProvider for LoggingConversationPr
                             sender: format!("*{:x}", group_msg.group_identity.group_id), // Group ID marker
                             text: text_msg.text.clone(),
                             timestamp: message.created_at,
+                            message_id: format!("{:016x}", message.id.0),
                         }).unwrap_or_default());
                     },
                     GroupMessageBody::Unknown { r#type, data } => {
